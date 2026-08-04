@@ -8,7 +8,8 @@ class RegisterDriverScreen extends ConsumerStatefulWidget {
   const RegisterDriverScreen({super.key});
 
   @override
-  ConsumerState<RegisterDriverScreen> createState() => _RegisterDriverScreenState();
+  ConsumerState<RegisterDriverScreen> createState() =>
+      _RegisterDriverScreenState();
 }
 
 class _RegisterDriverScreenState extends ConsumerState<RegisterDriverScreen> {
@@ -53,7 +54,10 @@ class _RegisterDriverScreenState extends ConsumerState<RegisterDriverScreen> {
       return;
     }
     if (password.text.length < 8 || !RegExp(r'\d').hasMatch(password.text)) {
-      setState(() => error = 'La contrasena debe tener 8 caracteres y al menos 1 numero.');
+      setState(
+        () => error =
+            'La contrasena debe tener 8 caracteres y al menos 1 numero.',
+      );
       return;
     }
     if (password.text != passwordConfirmation.text) {
@@ -78,7 +82,9 @@ class _RegisterDriverScreenState extends ConsumerState<RegisterDriverScreen> {
       });
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Registro enviado. Ya puedes intentar iniciar sesion.')),
+        const SnackBar(
+          content: Text('Registro enviado. Ya puedes intentar iniciar sesion.'),
+        ),
       );
       Navigator.pop(context);
     } catch (e) {
@@ -200,7 +206,8 @@ class _RegisterDriverScreenState extends ConsumerState<RegisterDriverScreen> {
                     selected: {vehicleType},
                     onSelectionChanged: loading
                         ? null
-                        : (values) => setState(() => vehicleType = values.first),
+                        : (values) =>
+                              setState(() => vehicleType = values.first),
                   ),
                   const SizedBox(height: 14),
                   TextField(
@@ -211,7 +218,11 @@ class _RegisterDriverScreenState extends ConsumerState<RegisterDriverScreen> {
                       prefixIcon: const Icon(Icons.lock_outline),
                       suffixIcon: IconButton(
                         onPressed: () => setState(() => visible = !visible),
-                        icon: Icon(visible ? Icons.visibility_off_outlined : Icons.visibility_outlined),
+                        icon: Icon(
+                          visible
+                              ? Icons.visibility_off_outlined
+                              : Icons.visibility_outlined,
+                        ),
                       ),
                     ),
                   ),
@@ -227,13 +238,20 @@ class _RegisterDriverScreenState extends ConsumerState<RegisterDriverScreen> {
                   if (error != null)
                     Padding(
                       padding: const EdgeInsets.only(top: 14),
-                      child: Text(error!, style: const TextStyle(color: Colors.redAccent)),
+                      child: Text(
+                        error!,
+                        style: const TextStyle(color: Colors.redAccent),
+                      ),
                     ),
                   const SizedBox(height: 22),
                   ElevatedButton(
                     onPressed: loading ? null : _submit,
                     child: loading
-                        ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))
+                        ? const SizedBox(
+                            width: 24,
+                            height: 24,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
                         : const Text('Crear usuario'),
                   ),
                 ],

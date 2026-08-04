@@ -11,6 +11,9 @@ class DeliveryOrder {
     this.latitude,
     this.longitude,
     this.operationId,
+    this.deliverySequence,
+    this.routeGroup,
+    this.backpackSequence,
     this.observations,
     this.rawJson = const {},
   });
@@ -26,6 +29,9 @@ class DeliveryOrder {
   final double? latitude;
   final double? longitude;
   final int? operationId;
+  final int? deliverySequence;
+  final String? routeGroup;
+  final int? backpackSequence;
   final String? observations;
   final Map<String, dynamic> rawJson;
 
@@ -45,12 +51,22 @@ class DeliveryOrder {
 
   factory DeliveryOrder.fromJson(Map<String, dynamic> json) {
     final coordinates = _parseCoordinates(
-      _findValue(json, ['destinatario_coordenadas', 'coordenadas', 'destino_coordenadas']),
+      _findValue(json, [
+        'destinatario_coordenadas',
+        'coordenadas',
+        'destino_coordenadas',
+      ]),
     );
     return DeliveryOrder(
       id: _parseInt(_findValue(json, ['id', 'pedido_id'])) ?? 0,
       externalRef: _stringOrDefault(
-        _findValue(json, ['external_ref', 'external_red', 'numero', 'codigo', 'referencia']),
+        _findValue(json, [
+          'external_ref',
+          'external_red',
+          'numero',
+          'codigo',
+          'referencia',
+        ]),
         'Pedido',
       ),
       customerName: _stringOrDefault(
@@ -73,7 +89,12 @@ class DeliveryOrder {
         'Cliente',
       ),
       address: _stringOrDefault(
-        _findValue(json, ['destinatario_direccion', 'direccion', 'direccion_cliente', 'address']),
+        _findValue(json, [
+          'destinatario_direccion',
+          'direccion',
+          'direccion_cliente',
+          'address',
+        ]),
         'Sin dirección',
       ),
       amountDue: _findMoney(json, [
@@ -91,45 +112,78 @@ class DeliveryOrder {
         'total_cobrar',
         'total',
       ]),
-      status: _stringOrDefault(
-        _findValue(json, ['estado_operacion', 'estado_nombre', 'estado']),
-        'asignado',
-      ).toLowerCase(),
+      status:
+          _stringOrDefault(
+            _findValue(json, ['estado_operacion', 'estado_nombre', 'estado']),
+            'asignado',
+          ).toLowerCase(),
       phone: _stringOrNull(
-        _findValue(json, ['destinatario_celular', 'telefono', 'celular', 'phone']),
+        _findValue(json, [
+          'destinatario_celular',
+          'telefono',
+          'celular',
+          'phone',
+        ]),
       ),
-      dni: _stringOrNull(_findValue(json, [
-        'destinatario_dni',
-        'destinatario_documento',
-        'destinatario_numero_documento',
-        'dni_destinatario',
-        'dni_cliente',
-        'documento_destinatario',
-        'documento_cliente',
-        'documento_identidad',
-        'numero_documento',
-        'nro_documento',
-        'doc_identidad',
-        'identificacion',
-        'dni',
-        'documento',
-      ])),
-      latitude: coordinates.$1 ?? _parseDouble(_findValue(json, ['lat', 'latitude'])),
-      longitude: coordinates.$2 ?? _parseDouble(_findValue(json, ['lng', 'longitude'])),
+      dni: _stringOrNull(
+        _findValue(json, [
+          'destinatario_dni',
+          'destinatario_documento',
+          'destinatario_numero_documento',
+          'dni_destinatario',
+          'dni_cliente',
+          'documento_destinatario',
+          'documento_cliente',
+          'documento_identidad',
+          'numero_documento',
+          'nro_documento',
+          'doc_identidad',
+          'identificacion',
+          'dni',
+          'documento',
+        ]),
+      ),
+      latitude:
+          coordinates.$1 ?? _parseDouble(_findValue(json, ['lat', 'latitude'])),
+      longitude:
+          coordinates.$2 ??
+          _parseDouble(_findValue(json, ['lng', 'longitude'])),
       operationId: _parseInt(_findValue(json, ['operacion_id'])),
-      observations: _stringOrNull(_findValue(json, ['observaciones', 'observacion', 'nota'])),
+      deliverySequence: _parseInt(
+        _findValue(json, ['orden_entrega', 'orden', 'secuencia']),
+      ),
+      routeGroup: _stringOrNull(
+        _findValue(json, [
+          'grupo',
+          'grupo_ruta',
+          'grupo_reparto',
+          'numero_vuelta',
+          'vuelta',
+        ]),
+      ),
+      backpackSequence: _parseInt(
+        _findValue(json, ['orden_mochila', 'orden_carga', 'posicion_mochila']),
+      ),
+      observations: _stringOrNull(
+        _findValue(json, ['observaciones', 'observacion', 'nota']),
+      ),
       rawJson: json,
     );
   }
 
-  static void _collectDiagnostics(dynamic value, List<String> entries, [String path = '']) {
+  static void _collectDiagnostics(
+    dynamic value,
+    List<String> entries, [
+    String path = '',
+  ]) {
     if (entries.length >= 20) return;
     if (value is Map<String, dynamic>) {
       for (final entry in value.entries) {
         final key = entry.key;
         final nextPath = path.isEmpty ? key : '$path.$key';
         final normalized = _normalizeKey(key);
-        final relevant = normalized.contains('nombre') ||
+        final relevant =
+            normalized.contains('nombre') ||
             normalized.contains('cliente') ||
             normalized.contains('dni') ||
             normalized.contains('documento') ||
@@ -145,7 +199,11 @@ class DeliveryOrder {
       return;
     }
     if (value is Map) {
-      _collectDiagnostics(value.map((k, v) => MapEntry(k.toString(), v)), entries, path);
+      _collectDiagnostics(
+        value.map((k, v) => MapEntry(k.toString(), v)),
+        entries,
+        path,
+      );
       return;
     }
     if (value is List) {
@@ -155,7 +213,11 @@ class DeliveryOrder {
     }
   }
 
-  static void _collectAllDiagnostics(dynamic value, List<String> entries, [String path = '']) {
+  static void _collectAllDiagnostics(
+    dynamic value,
+    List<String> entries, [
+    String path = '',
+  ]) {
     if (entries.length >= 30) return;
     if (value is Map<String, dynamic>) {
       for (final entry in value.entries) {
@@ -169,7 +231,11 @@ class DeliveryOrder {
       return;
     }
     if (value is Map) {
-      _collectAllDiagnostics(value.map((k, v) => MapEntry(k.toString(), v)), entries, path);
+      _collectAllDiagnostics(
+        value.map((k, v) => MapEntry(k.toString(), v)),
+        entries,
+        path,
+      );
       return;
     }
     if (value is List) {
@@ -192,7 +258,8 @@ class DeliveryOrder {
       if (json.containsKey(key) && json[key] != null) return json[key];
     }
     for (final entry in json.entries) {
-      if (normalizedKeys.contains(_normalizeKey(entry.key)) && entry.value != null) {
+      if (normalizedKeys.contains(_normalizeKey(entry.key)) &&
+          entry.value != null) {
         return entry.value;
       }
     }
@@ -203,7 +270,10 @@ class DeliveryOrder {
         if (found != null) return found;
       }
       if (value is Map) {
-        final found = _findValue(value.map((k, v) => MapEntry(k.toString(), v)), keys);
+        final found = _findValue(
+          value.map((k, v) => MapEntry(k.toString(), v)),
+          keys,
+        );
         if (found != null) return found;
       }
       if (value is List) {
@@ -213,7 +283,10 @@ class DeliveryOrder {
             if (found != null) return found;
           }
           if (item is Map) {
-            final found = _findValue(item.map((k, v) => MapEntry(k.toString(), v)), keys);
+            final found = _findValue(
+              item.map((k, v) => MapEntry(k.toString(), v)),
+              keys,
+            );
             if (found != null) return found;
           }
         }
@@ -266,7 +339,15 @@ class DeliveryOrder {
     if (value == null) return 0;
     if (value is num) return value.toDouble();
     if (value is Map) {
-      for (final key in ['monto', 'monto_a_cobrar', 'saldo', 'total', 'importe', 'amount', 'valor']) {
+      for (final key in [
+        'monto',
+        'monto_a_cobrar',
+        'saldo',
+        'total',
+        'importe',
+        'amount',
+        'valor',
+      ]) {
         if (value.containsKey(key)) return _parseMoney(value[key]);
       }
       return 0;
@@ -278,7 +359,9 @@ class DeliveryOrder {
     if (lastComma >= 0 && lastDot >= 0) {
       final decimalSeparator = lastComma > lastDot ? ',' : '.';
       final thousandSeparator = decimalSeparator == ',' ? '.' : ',';
-      clean = clean.replaceAll(thousandSeparator, '').replaceAll(decimalSeparator, '.');
+      clean = clean
+          .replaceAll(thousandSeparator, '')
+          .replaceAll(decimalSeparator, '.');
     } else {
       clean = clean.replaceAll(',', '.');
     }

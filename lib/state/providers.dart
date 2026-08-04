@@ -7,11 +7,17 @@ import '../models/order.dart';
 import '../services/api_service.dart';
 import '../services/token_storage.dart';
 
-final secureStorageProvider = Provider((ref) => const FlutterSecureStorage(
-      aOptions: AndroidOptions(encryptedSharedPreferences: true),
-    ));
-final tokenStorageProvider = Provider((ref) => TokenStorage(ref.watch(secureStorageProvider)));
-final apiProvider = Provider((ref) => ApiService(ref.watch(tokenStorageProvider)));
+final secureStorageProvider = Provider(
+  (ref) => const FlutterSecureStorage(
+    aOptions: AndroidOptions(encryptedSharedPreferences: true),
+  ),
+);
+final tokenStorageProvider = Provider(
+  (ref) => TokenStorage(ref.watch(secureStorageProvider)),
+);
+final apiProvider = Provider(
+  (ref) => ApiService(ref.watch(tokenStorageProvider)),
+);
 
 class AuthState {
   const AuthState({this.user, this.loading = false, this.error});
@@ -115,7 +121,10 @@ class AuthController extends StateNotifier<AuthState> {
 }
 
 final authProvider = StateNotifierProvider<AuthController, AuthState>((ref) {
-  return AuthController(ref.watch(apiProvider), ref.watch(tokenStorageProvider));
+  return AuthController(
+    ref.watch(apiProvider),
+    ref.watch(tokenStorageProvider),
+  );
 });
 
 final ordersProvider = FutureProvider.autoDispose<List<DeliveryOrder>>((ref) {

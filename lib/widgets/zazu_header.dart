@@ -51,12 +51,18 @@ class ZazuHeader extends StatelessWidget {
                         color: const Color(0xFF121024).withValues(alpha: .35),
                         borderRadius: BorderRadius.circular(14),
                       ),
-                      child: Image.asset('assets/images/zazu_logo.png', fit: BoxFit.contain),
+                      child: Image.asset(
+                        'assets/images/zazu_logo.png',
+                        fit: BoxFit.contain,
+                      ),
                     ),
                     const SizedBox(width: 10),
                     const Text(
                       'ZAZU Driver',
-                      style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800),
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                      ),
                     ),
                   ],
                 ),
@@ -95,7 +101,10 @@ class ZazuHeader extends StatelessWidget {
             alignment: Alignment.center,
             child: Text(
               initials.isEmpty ? 'ZD' : initials,
-              style: TextStyle(fontSize: compact ? 18 : 21, fontWeight: FontWeight.w900),
+              style: TextStyle(
+                fontSize: compact ? 18 : 21,
+                fontWeight: FontWeight.w900,
+              ),
             ),
           ),
         ],

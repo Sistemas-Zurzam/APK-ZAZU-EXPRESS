@@ -55,14 +55,19 @@ class AppTheme {
           borderRadius: BorderRadius.circular(18),
           borderSide: const BorderSide(color: purple, width: 1.5),
         ),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 18,
+          vertical: 16,
+        ),
       ),
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
           backgroundColor: purple,
           foregroundColor: Colors.white,
           minimumSize: const Size.fromHeight(54),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+          ),
           textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
           elevation: 0,
         ),
@@ -74,9 +79,13 @@ class AppTheme {
         labelTextStyle: const WidgetStatePropertyAll(
           TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
         ),
-        iconTheme: WidgetStateProperty.resolveWith((states) => IconThemeData(
-              color: states.contains(WidgetState.selected) ? purpleLight : textMuted,
-            )),
+        iconTheme: WidgetStateProperty.resolveWith(
+          (states) => IconThemeData(
+            color: states.contains(WidgetState.selected)
+                ? purpleLight
+                : textMuted,
+          ),
+        ),
       ),
     );
   }

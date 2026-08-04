@@ -16,11 +16,11 @@ class AppUser {
   final int? activo;
 
   factory AppUser.fromJson(Map<String, dynamic> json) => AppUser(
-        id: int.tryParse('${json['id'] ?? 0}') ?? 0,
-        name: '${json['name'] ?? json['nombre'] ?? 'Motorizado'}',
-        username: '${json['username'] ?? json['dni'] ?? ''}',
-        roleId: int.tryParse('${json['role_id'] ?? 0}') ?? 0,
-        estado: json['estado']?.toString(),
-        activo: int.tryParse('${json['activo'] ?? ''}'),
-      );
+    id: int.tryParse('${json['id'] ?? 0}') ?? 0,
+    name: '${json['name'] ?? json['nombre'] ?? 'Motorizado'}',
+    username: '${json['username'] ?? json['dni'] ?? ''}',
+    roleId: int.tryParse('${json['role_id'] ?? 0}') ?? 0,
+    estado: json['estado']?.toString(),
+    activo: int.tryParse('${json['activo'] ?? ''}'),
+  );
 }

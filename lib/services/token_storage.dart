@@ -10,7 +10,10 @@ class TokenStorage {
   Future<String?> readToken() => _storage.read(key: _tokenKey);
   Future<String?> readUserJson() => _storage.read(key: _userKey);
 
-  Future<void> saveSession({required String token, required String userJson}) async {
+  Future<void> saveSession({
+    required String token,
+    required String userJson,
+  }) async {
     await Future.wait([
       _storage.write(key: _tokenKey, value: token),
       _storage.write(key: _userKey, value: userJson),

@@ -37,8 +37,8 @@ class _ZazuDriverAppState extends ConsumerState<ZazuDriverApp> {
       home: !restored
           ? const Scaffold(body: Center(child: CircularProgressIndicator()))
           : auth.authenticated
-              ? const HomeShell()
-              : const LoginScreen(),
+          ? const HomeShell()
+          : const LoginScreen(),
     );
   }
 }

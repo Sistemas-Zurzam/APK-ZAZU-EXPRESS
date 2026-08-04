@@ -17,7 +17,13 @@ class HomeShell extends ConsumerStatefulWidget {
 
 class _HomeShellState extends ConsumerState<HomeShell> {
   int index = 0;
-  static const pages = [OrdersScreen(), ScannerScreen(), MapScreen(), EarningsScreen(), ProfileScreen()];
+  static const pages = [
+    OrdersScreen(),
+    ScannerScreen(),
+    MapScreen(),
+    EarningsScreen(),
+    ProfileScreen(),
+  ];
 
   @override
   Widget build(BuildContext context) {
@@ -31,7 +37,9 @@ class _HomeShellState extends ConsumerState<HomeShell> {
         child: Column(
           children: [
             if (showHeader) ZazuHeader(name: user.name),
-            Expanded(child: IndexedStack(index: index, children: pages)),
+            Expanded(
+              child: IndexedStack(index: index, children: pages),
+            ),
           ],
         ),
       ),
@@ -41,11 +49,30 @@ class _HomeShellState extends ConsumerState<HomeShell> {
           selectedIndex: index,
           onDestinationSelected: (value) => setState(() => index = value),
           destinations: const [
-            NavigationDestination(icon: Icon(Icons.inventory_2_outlined), selectedIcon: Icon(Icons.inventory_2), label: 'Pedidos'),
-            NavigationDestination(icon: Icon(Icons.qr_code_scanner), label: 'Escáner'),
-            NavigationDestination(icon: Icon(Icons.route_outlined), selectedIcon: Icon(Icons.route), label: 'Rutas'),
-            NavigationDestination(icon: Icon(Icons.payments_outlined), selectedIcon: Icon(Icons.payments), label: 'Ingresos'),
-            NavigationDestination(icon: Icon(Icons.person_outline), selectedIcon: Icon(Icons.person), label: 'Perfil'),
+            NavigationDestination(
+              icon: Icon(Icons.inventory_2_outlined),
+              selectedIcon: Icon(Icons.inventory_2),
+              label: 'Pedidos',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.qr_code_scanner),
+              label: 'Escáner',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.route_outlined),
+              selectedIcon: Icon(Icons.route),
+              label: 'Rutas',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.payments_outlined),
+              selectedIcon: Icon(Icons.payments),
+              label: 'Ingresos',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.person_outline),
+              selectedIcon: Icon(Icons.person),
+              label: 'Perfil',
+            ),
           ],
         ),
       ),

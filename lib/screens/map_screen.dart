@@ -5,7 +5,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import '../core/google_polyline.dart';
 import '../core/app_theme.dart';
+import '../core/currency_format.dart';
 import '../models/order.dart';
 import '../state/providers.dart';
 
@@ -23,6 +25,8 @@ class _MapScreenState extends ConsumerState<MapScreen> {
   BitmapDescriptor? motoIcon;
   GoogleMapController? mapController;
   List<DeliveryOrder> routeOrders = const [];
+  List<List<LatLng>> routeSegments = const [];
+  Map<int, BitmapDescriptor> numberedIcons = const {};
   bool loading = true;
   String? routeMessage;
 
@@ -44,20 +48,56 @@ class _MapScreenState extends ConsumerState<MapScreen> {
         permission = await Geolocator.requestPermission();
       }
 
-      if (permission != LocationPermission.denied && permission != LocationPermission.deniedForever) {
+      if (permission != LocationPermission.denied &&
+          permission != LocationPermission.deniedForever) {
         current = await Geolocator.getCurrentPosition();
       }
 
-      motoIcon ??= await _assetMarker('assets/images/motorizado.png', 130);
+      motoIcon ??= await _assetMarker('assets/images/motorizado.png', 64);
       final origin = _origin;
-      final route = await _loadRouteWithFallback(origin);
-      routeOrders = route.where((order) => order.hasCoordinates).toList();
-      if (routeOrders.isEmpty) {
-        routeMessage = 'No hay pedidos con coordenadas para mostrar en ruta.';
+
+      try {
+        final orders = await ref.read(apiProvider).getMyOrders();
+        routeOrders = orders.where((order) => order.hasCoordinates).toList();
+        routeOrders.sort(
+          (left, right) => (left.deliverySequence ?? 1 << 30).compareTo(
+            right.deliverySequence ?? 1 << 30,
+          ),
+        );
+        numberedIcons = await _buildNumberedIcons(routeOrders);
+      } catch (_) {
+        routeOrders = const [];
+        numberedIcons = const {};
+        routeMessage = 'No se pudieron cargar los pedidos asignados.';
       }
-    } catch (error) {
+
+      try {
+        final geometry = await ref
+            .read(apiProvider)
+            .getMyRoute(origin.latitude, origin.longitude);
+        routeSegments = decodeGooglePolylineSegments(geometry.polylines);
+        if (routeSegments.isEmpty) {
+          routeMessage ??= 'El servidor no devolvió un trazado para la ruta.';
+        } else if (_looksLikeStraightLines(routeSegments)) {
+          routeMessage =
+              'El trazado recibido es una línea recta entre paradas: '
+              'no sigue el callejero. Revisa el cálculo de ruta en el servidor.';
+        } else if (!geometry.complete) {
+          routeMessage =
+              'Se muestra una ruta parcial. Algunos tramos no pudieron calcularse.';
+        }
+      } catch (_) {
+        routeSegments = const [];
+        routeMessage ??= 'No se pudo cargar el trazado de la ruta.';
+      }
+
+      if (routeOrders.isEmpty) {
+        routeMessage ??= 'No hay pedidos con coordenadas para mostrar en ruta.';
+      }
+    } catch (_) {
       routeOrders = const [];
-      routeMessage = 'No se pudo cargar la ruta inteligente.';
+      routeSegments = const [];
+      routeMessage = 'No se pudo preparar el mapa y la ubicación.';
     } finally {
       if (mounted) {
         setState(() => loading = false);
@@ -66,26 +106,95 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     }
   }
 
-  Future<List<DeliveryOrder>> _loadRouteWithFallback(LatLng origin) async {
-    try {
-      return await ref.read(apiProvider).getSmartRoute(origin.latitude, origin.longitude);
-    } catch (_) {
-      final orders = await ref.read(apiProvider).getMyOrders();
-      routeMessage = 'Ruta armada con tus pedidos. La ruta inteligente del servidor no respondio.';
-      return orders;
-    }
-  }
-
   LatLng get _origin {
     if (current == null) return fallbackOrigin;
     return LatLng(current!.latitude, current!.longitude);
   }
 
+  /// Un tramo real que sigue calles suele tener decenas de vértices (el
+  /// callejero curva y da vueltas). Una línea recta entre dos paradas se
+  /// decodifica con muy pocos puntos. Si casi todos los tramos tienen 2
+  /// puntos o menos por cada ~150 m de distancia, es una línea recta y no
+  /// un trazado real.
+  bool _looksLikeStraightLines(List<List<LatLng>> segments) {
+    var straightSegments = 0;
+    for (final segment in segments) {
+      if (segment.length > 3) continue;
+      final distance = Geolocator.distanceBetween(
+        segment.first.latitude,
+        segment.first.longitude,
+        segment.last.latitude,
+        segment.last.longitude,
+      );
+      if (segment.length <= 2 || distance / segment.length > 150) {
+        straightSegments++;
+      }
+    }
+    return straightSegments >= segments.length * 0.7;
+  }
+
   Future<BitmapDescriptor> _assetMarker(String asset, int width) async {
     final data = await rootBundle.load(asset);
-    final codec = await ui.instantiateImageCodec(data.buffer.asUint8List(), targetWidth: width);
+    final codec = await ui.instantiateImageCodec(
+      data.buffer.asUint8List(),
+      targetWidth: width,
+    );
     final frame = await codec.getNextFrame();
     final bytes = await frame.image.toByteData(format: ui.ImageByteFormat.png);
+    return BitmapDescriptor.bytes(bytes!.buffer.asUint8List());
+  }
+
+  Future<Map<int, BitmapDescriptor>> _buildNumberedIcons(
+    List<DeliveryOrder> orders,
+  ) async {
+    final icons = <int, BitmapDescriptor>{};
+    for (var index = 0; index < orders.length; index++) {
+      final sequence = orders[index].deliverySequence ?? index + 1;
+      icons[sequence] ??= await _numberedMarker(sequence);
+    }
+    return icons;
+  }
+
+  Future<BitmapDescriptor> _numberedMarker(int number) async {
+    const size = 48.0;
+    const center = Offset(size / 2, size / 2);
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+
+    canvas.drawCircle(center, 21, Paint()..color = AppTheme.purple);
+    canvas.drawCircle(
+      center,
+      18,
+      Paint()
+        ..color = Colors.white
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2,
+    );
+
+    final textPainter = TextPainter(
+      text: TextSpan(
+        text: '$number',
+        style: TextStyle(
+          color: Colors.white,
+          fontSize: number >= 100 ? 12 : 16,
+          fontWeight: FontWeight.w900,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    textPainter.paint(
+      canvas,
+      Offset(
+        center.dx - textPainter.width / 2,
+        center.dy - textPainter.height / 2,
+      ),
+    );
+
+    final image = await recorder.endRecording().toImage(
+      size.toInt(),
+      size.toInt(),
+    );
+    final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
     return BitmapDescriptor.bytes(bytes!.buffer.asUint8List());
   }
 
@@ -98,46 +207,49 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       Marker(
         markerId: const MarkerId('me'),
         position: origin,
-        icon: motoIcon ?? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
+        anchor: const Offset(0.5, 0.5),
+        flat: true,
+        icon:
+            motoIcon ??
+            BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
         infoWindow: const InfoWindow(title: 'Mi ubicación'),
       ),
     };
 
     for (var i = 0; i < routeOrders.length; i++) {
       final order = routeOrders[i];
+      final sequence = order.deliverySequence ?? i + 1;
       markers.add(
         Marker(
           markerId: MarkerId('order_${order.id}_$i'),
           position: LatLng(order.latitude!, order.longitude!),
-          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueViolet),
+          anchor: const Offset(0.5, 0.5),
+          icon:
+              numberedIcons[sequence] ??
+              BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueViolet),
           infoWindow: InfoWindow(
-            title: '${i + 1}. ${order.externalRef}',
-            snippet: '${order.customerName} · S/${order.amountDue.toStringAsFixed(2)}',
+            title: '$sequence. ${order.externalRef}',
+            snippet:
+                '${order.customerName} · ${peruvianCurrency.format(order.amountDue)}',
           ),
         ),
       );
     }
-
-    final points = [
-      origin,
-      ...routeOrders.map((order) => LatLng(order.latitude!, order.longitude!)),
-    ];
 
     return Stack(
       children: [
         GoogleMap(
           initialCameraPosition: CameraPosition(target: origin, zoom: 12),
           markers: markers,
-          polylines: points.length > 1
-              ? {
-                  Polyline(
-                    polylineId: const PolylineId('smart_route'),
-                    points: points,
-                    color: AppTheme.purple,
-                    width: 7,
-                  ),
-                }
-              : {},
+          polylines: {
+            for (var index = 0; index < routeSegments.length; index++)
+              Polyline(
+                polylineId: PolylineId('smart_route_$index'),
+                points: routeSegments[index],
+                color: AppTheme.purple,
+                width: 7,
+              ),
+          },
           myLocationButtonEnabled: false,
           zoomControlsEnabled: true,
           compassEnabled: true,
@@ -156,7 +268,8 @@ class _MapScreenState extends ConsumerState<MapScreen> {
             child: Padding(
               padding: const EdgeInsets.all(16),
               child: Text(
-                routeMessage ?? 'Ruta inteligente\n${routeOrders.length} parada${routeOrders.length == 1 ? '' : 's'} en orden de reparto.',
+                routeMessage ??
+                    'Ruta de reparto\n${routeOrders.length} parada${routeOrders.length == 1 ? '' : 's'} en orden de reparto.',
                 style: const TextStyle(fontWeight: FontWeight.w700),
               ),
             ),
@@ -165,7 +278,10 @@ class _MapScreenState extends ConsumerState<MapScreen> {
         Positioned(
           right: 16,
           bottom: 24,
-          child: FloatingActionButton(onPressed: _load, child: const Icon(Icons.my_location)),
+          child: FloatingActionButton(
+            onPressed: _load,
+            child: const Icon(Icons.my_location),
+          ),
         ),
       ],
     );
@@ -173,12 +289,25 @@ class _MapScreenState extends ConsumerState<MapScreen> {
 
   void _fitRoute() {
     final controller = mapController;
-    if (controller == null || routeOrders.isEmpty) return;
+    if (controller == null) return;
 
-    final points = [
-      _origin,
-      ...routeOrders.map((order) => LatLng(order.latitude!, order.longitude!)),
-    ];
+    final routePoints = routeSegments.expand((segment) => segment).toList();
+    final points =
+        routePoints.isNotEmpty
+            ? routePoints
+            : [
+              _origin,
+              ...routeOrders.map(
+                (order) => LatLng(order.latitude!, order.longitude!),
+              ),
+            ];
+    if (points.isEmpty) return;
+    if (points.length == 1) {
+      unawaited(
+        controller.animateCamera(CameraUpdate.newLatLngZoom(points.first, 15)),
+      );
+      return;
+    }
     var minLat = points.first.latitude;
     var maxLat = points.first.latitude;
     var minLng = points.first.longitude;
