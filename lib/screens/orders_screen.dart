@@ -1,10 +1,13 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:url_launcher/url_launcher.dart';
 import '../core/app_theme.dart';
 import '../core/currency_format.dart';
+import '../core/external_navigation.dart';
+import '../core/media_url.dart';
 import '../models/order.dart';
+import '../models/payment_method.dart';
 import '../state/providers.dart';
 import '../widgets/order_card.dart';
 
@@ -30,7 +33,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
         loading: () => const _OrdersLoading(),
         error:
             (error, _) => _ErrorState(
-              message: error.toString().replaceFirst('Exception: ', ''),
+              message: _actionError(error),
               onRetry: () => ref.invalidate(ordersProvider),
             ),
         data: (items) {
@@ -107,7 +110,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
                             () => _showOrderDetails(context, order, index + 1),
                         onRoute:
                             order.hasCoordinates
-                                ? () => _openNavigation(context, order)
+                                ? () => _focusOnRouteMap(order)
                                 : null,
                       );
                     },
@@ -121,60 +124,28 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
   }
 
   List<DeliveryOrder> _filterOrders(List<DeliveryOrder> items) {
-    bool isDelivered(DeliveryOrder order) =>
-        order.status.toLowerCase().contains('entregado');
-    bool isRoute(DeliveryOrder order) {
-      final value = order.status.toLowerCase();
-      return value.contains('ruta') || value.contains('recibido');
-    }
-
     switch (selected) {
       case 'ruta':
-        return items.where(isRoute).toList();
+        return items.where((order) => order.isInRoute).toList();
       case 'entregados':
-        return items.where(isDelivered).toList();
+        return items.where((order) => order.isDelivered).toList();
       default:
         return items
-            .where((order) => !isDelivered(order) && !isRoute(order))
+            .where((order) => !order.isDelivered && !order.isInRoute)
             .toList();
     }
+  }
+
+  void _focusOnRouteMap(DeliveryOrder order) {
+    ref.read(focusedOrderIdProvider.notifier).state = order.id;
+    ref.read(homeTabIndexProvider.notifier).state = 2;
   }
 
   Future<void> _openNavigation(
     BuildContext context,
     DeliveryOrder order,
   ) async {
-    if (!order.hasCoordinates) return;
-
-    final destination = '${order.latitude},${order.longitude}';
-    final googleNavigation = Uri.parse(
-      'google.navigation:q=$destination&mode=d',
-    );
-    final webNavigation = Uri.https('www.google.com', '/maps/dir/', {
-      'api': '1',
-      'destination': destination,
-      'travelmode': 'driving',
-    });
-
-    try {
-      final opened = await launchUrl(
-        googleNavigation,
-        mode: LaunchMode.externalApplication,
-      );
-      if (opened) return;
-    } catch (_) {
-      // Se intenta el enlace web compatible con cualquier navegador.
-    }
-
-    final opened = await launchUrl(
-      webNavigation,
-      mode: LaunchMode.externalApplication,
-    );
-    if (!opened && context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No se pudo abrir la navegación.')),
-      );
-    }
+    await openExternalNavigation(context, order);
   }
 
   void _showOrderDetails(
@@ -315,7 +286,8 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
                                   () => ref
                                       .read(apiProvider)
                                       .confirmReception(
-                                        order.id,
+                                        order.externalRef,
+                                        orderId: order.id,
                                         operationId: order.operationId,
                                       ),
                             ),
@@ -330,6 +302,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
                                         order.id,
                                         operationId: order.operationId,
                                       ),
+                              onSuccess: () => _focusOnRouteMap(order),
                             ),
                         onDeliver: () => _deliverWithEvidence(context, order),
                         onReschedule:
@@ -365,6 +338,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
     BuildContext context, {
     required Future<void> Function() action,
     required String successMessage,
+    VoidCallback? onSuccess,
   }) async {
     if (processingAction) return;
     setState(() => processingAction = true);
@@ -376,6 +350,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text(successMessage)));
+      onSuccess?.call();
     } catch (error) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(
@@ -390,24 +365,109 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
     BuildContext context,
     DeliveryOrder order,
   ) async {
-    final image = await ImagePicker().pickImage(
+    final proceed = await showDialog<bool>(
+      context: context,
+      builder:
+          (dialogContext) => AlertDialog(
+            title: const Text('Dos fotos de evidencia'),
+            content: const Text(
+              'Para completar la entrega tomarás dos fotos consecutivas. '
+              'Verifica que ambas evidencias sean claras.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('Cancelar'),
+              ),
+              FilledButton.icon(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                icon: const Icon(Icons.camera_alt_outlined),
+                label: const Text('Comenzar'),
+              ),
+            ],
+          ),
+    );
+    if (proceed != true || !context.mounted) return;
+
+    _SelectedPayment? payment;
+    if (order.amountDue > 0) {
+      payment = await _selectPaymentMethod(context, order);
+      if (payment == null || !context.mounted) return;
+    }
+
+    final picker = ImagePicker();
+    final firstImage = await picker.pickImage(
       source: ImageSource.camera,
       imageQuality: 78,
       maxWidth: 1600,
     );
-    if (image == null || !context.mounted) return;
+    if (firstImage == null || !context.mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Primera foto lista. Toma la segunda.')),
+    );
+    final secondImage = await picker.pickImage(
+      source: ImageSource.camera,
+      imageQuality: 78,
+      maxWidth: 1600,
+    );
+    if (secondImage == null || !context.mounted) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Entrega no confirmada: falta la segunda foto de evidencia.',
+            ),
+          ),
+        );
+      }
+      return;
+    }
 
     await _runOrderAction(
       context,
-      successMessage: 'Pedido entregado con evidencia.',
+      successMessage: 'Pedido entregado con dos evidencias.',
+      onSuccess: () {
+        final delivered = order.withStatus('entregado');
+        final notifier = ref.read(deliveredOrdersProvider.notifier);
+        notifier.state = [
+          delivered,
+          ...notifier.state.where((item) => item.id != order.id),
+        ];
+        setState(() => selected = 'entregados');
+      },
       action:
           () => ref
               .read(apiProvider)
               .confirmDelivery(
                 order.id,
                 operationId: order.operationId,
-                evidencePath: image.path,
+                evidencePaths: [firstImage.path, secondImage.path],
+                medioPago: payment?.medioPago,
+                yapeAlias: payment?.yapeAlias,
+                montoEfectivo: payment?.montoEfectivo,
+                nroOperacion: payment?.nroOperacion,
               ),
+    );
+  }
+
+  Future<_SelectedPayment?> _selectPaymentMethod(
+    BuildContext context,
+    DeliveryOrder order,
+  ) {
+    return showModalBottomSheet<_SelectedPayment>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder:
+          (context) => DraggableScrollableSheet(
+            initialChildSize: .82,
+            minChildSize: .5,
+            maxChildSize: .95,
+            builder:
+                (context, controller) =>
+                    _PaymentMethodSheet(order: order, scrollController: controller),
+          ),
     );
   }
 
@@ -473,11 +533,30 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
   }
 
   String _actionError(Object error) {
+    if (error is DioException) {
+      final serverMessage = _serverMessage(error.response?.data);
+      if (serverMessage != null) return serverMessage;
+      if (error.response?.statusCode != null) {
+        return 'No se pudo completar la acción (error ${error.response!.statusCode}).';
+      }
+      return 'No se pudo conectar con el servidor. Revisa tu conexión.';
+    }
+
     final text = error
         .toString()
         .replaceFirst('Exception: ', '')
         .replaceFirst('Bad state: ', '');
-    return text.isEmpty ? 'No se pudo completar la accion.' : text;
+    return text.isEmpty ? 'No se pudo completar la acción.' : text;
+  }
+
+  String? _serverMessage(dynamic data) {
+    if (data is Map) {
+      final message = data['message'];
+      if (message != null && message.toString().trim().isNotEmpty) {
+        return message.toString();
+      }
+    }
+    return null;
   }
 }
 
@@ -502,9 +581,8 @@ class _OrderActions extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final status = order.status.toLowerCase();
-    final isDelivered = status.contains('entregado');
-    final isRoute = status.contains('ruta') || status.contains('recibido');
+    final isDelivered = order.isDelivered;
+    final isRoute = order.isInRoute;
 
     return Column(
       children: [
@@ -574,23 +652,13 @@ class _Summary extends StatelessWidget {
   Widget build(BuildContext context) {
     final assigned =
         orders.where((o) {
-          final s = o.status.toLowerCase();
-          return !s.contains('ruta') &&
-              !s.contains('recibido') &&
-              !s.contains('entregado');
+          return !o.isInRoute && !o.isDelivered;
         }).length;
-    final route =
-        orders.where((o) {
-          final s = o.status.toLowerCase();
-          return s.contains('ruta') || s.contains('recibido');
-        }).length;
-    final delivered =
-        orders
-            .where((o) => o.status.toLowerCase().contains('entregado'))
-            .length;
+    final route = orders.where((o) => o.isInRoute).length;
+    final delivered = orders.where((o) => o.isDelivered).length;
     final amount = orders.fold<double>(
       0,
-      (sum, order) => sum + order.amountDue,
+      (sum, order) => sum + (order.isDelivered ? 0 : order.amountDue),
     );
 
     return Column(
@@ -988,6 +1056,518 @@ class _OrdersLoading extends StatelessWidget {
             decoration: BoxDecoration(
               color: AppTheme.surface,
               borderRadius: BorderRadius.circular(24),
+            ),
+          ),
+    );
+  }
+}
+
+class _SelectedPayment {
+  const _SelectedPayment({
+    this.medioPago,
+    this.yapeAlias,
+    this.montoEfectivo,
+    this.nroOperacion,
+  });
+
+  final String? medioPago;
+  final String? yapeAlias;
+  final double? montoEfectivo;
+  final String? nroOperacion;
+}
+
+class _PaymentMethodSheet extends ConsumerStatefulWidget {
+  const _PaymentMethodSheet({
+    required this.order,
+    required this.scrollController,
+  });
+
+  final DeliveryOrder order;
+  final ScrollController scrollController;
+
+  @override
+  ConsumerState<_PaymentMethodSheet> createState() =>
+      _PaymentMethodSheetState();
+}
+
+class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
+  late final Future<List<PaymentMethod>> _future;
+  PaymentMethod? _selectedMethod;
+  PaymentAccount? _selectedAccount;
+  final _referenceController = TextEditingController();
+  final _cashController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _future = ref.read(apiProvider).getPaymentMethods(widget.order.id);
+  }
+
+  @override
+  void dispose() {
+    _referenceController.dispose();
+    _cashController.dispose();
+    super.dispose();
+  }
+
+  bool get _isCash {
+    final method = _selectedMethod;
+    if (method == null) return false;
+    return method.codigo.toUpperCase() == 'EFECTIVO' ||
+        method.nombre.toLowerCase().contains('efectivo');
+  }
+
+  bool get _canContinue {
+    final method = _selectedMethod;
+    if (method == null) return false;
+    if (method.cuentas.isNotEmpty && _selectedAccount == null) return false;
+    if (method.requiereReferencia &&
+        _referenceController.text.trim().isEmpty) {
+      return false;
+    }
+    return true;
+  }
+
+  void _confirm() {
+    final method = _selectedMethod!;
+    final cashAmount =
+        _isCash
+            ? double.tryParse(_cashController.text.trim().replaceAll(',', '.'))
+            : null;
+    Navigator.pop(
+      context,
+      _SelectedPayment(
+        medioPago: method.codigo.isNotEmpty ? method.codigo : method.nombre,
+        yapeAlias: _selectedAccount?.alias,
+        montoEfectivo: cashAmount,
+        nroOperacion:
+            method.requiereReferencia
+                ? _referenceController.text.trim()
+                : null,
+      ),
+    );
+  }
+
+  void _skip() => Navigator.pop(context, const _SelectedPayment());
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppTheme.surface,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
+      ),
+      child: FutureBuilder<List<PaymentMethod>>(
+        future: _future,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState != ConnectionState.done) {
+            return const Padding(
+              padding: EdgeInsets.all(40),
+              child: Center(child: CircularProgressIndicator()),
+            );
+          }
+          if (snapshot.hasError) {
+            return _buildError(context);
+          }
+          final methods = snapshot.data ?? const [];
+          if (methods.isEmpty) {
+            return _buildError(
+              context,
+              message: 'No hay medios de pago configurados.',
+            );
+          }
+          return _buildContent(context, methods);
+        },
+      ),
+    );
+  }
+
+  Widget _buildError(BuildContext context, {String? message}) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 40, 24, 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(
+            Icons.cloud_off_rounded,
+            size: 48,
+            color: AppTheme.warning,
+          ),
+          const SizedBox(height: 14),
+          Text(
+            message ?? 'No se pudieron cargar los medios de pago.',
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 20),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton(
+              onPressed: _skip,
+              child: const Text('Continuar sin medio de pago'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildContent(BuildContext context, List<PaymentMethod> methods) {
+    final method = _selectedMethod;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const SizedBox(height: 12),
+        Container(
+          width: 48,
+          height: 5,
+          decoration: BoxDecoration(
+            color: Colors.white24,
+            borderRadius: BorderRadius.circular(20),
+          ),
+        ),
+        Expanded(
+          child: ListView(
+            controller: widget.scrollController,
+            padding: const EdgeInsets.fromLTRB(22, 16, 22, 16),
+            children: [
+              const Text(
+                'Medio de pago',
+                style: TextStyle(fontSize: 21, fontWeight: FontWeight.w900),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Saldo a cobrar: ${peruvianCurrency.format(widget.order.amountDue)}',
+                style: const TextStyle(color: AppTheme.textMuted),
+              ),
+              const SizedBox(height: 18),
+              ...methods.map(
+                (m) => _MethodTile(
+                  method: m,
+                  selected: method?.id == m.id,
+                  onTap:
+                      () => setState(() {
+                        _selectedMethod = m;
+                        _selectedAccount =
+                            m.cuentas.length == 1 ? m.cuentas.first : null;
+                        _referenceController.clear();
+                      }),
+                ),
+              ),
+              if (method != null && method.cuentas.length > 1) ...[
+                const SizedBox(height: 16),
+                const Text(
+                  'Cuenta a mostrar al cliente',
+                  style: TextStyle(fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children:
+                      method.cuentas
+                          .map(
+                            (a) => ChoiceChip(
+                              label: Text(
+                                a.alias ?? a.nombre ?? 'Cuenta ${a.id}',
+                              ),
+                              selected: _selectedAccount?.id == a.id,
+                              onSelected:
+                                  (_) => setState(() => _selectedAccount = a),
+                            ),
+                          )
+                          .toList(),
+                ),
+              ],
+              if (method != null && _selectedAccount != null) ...[
+                const SizedBox(height: 16),
+                _AccountCard(account: _selectedAccount!),
+              ],
+              if (method != null && method.requiereReferencia) ...[
+                const SizedBox(height: 16),
+                TextField(
+                  controller: _referenceController,
+                  onChanged: (_) => setState(() {}),
+                  decoration: const InputDecoration(
+                    labelText: 'Número de operación',
+                    hintText: 'Ej. 000123456',
+                  ),
+                ),
+              ],
+              if (method != null && _isCash) ...[
+                const SizedBox(height: 16),
+                TextField(
+                  controller: _cashController,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  decoration: InputDecoration(
+                    labelText: 'Monto cobrado (opcional)',
+                    hintText: widget.order.amountDue.toStringAsFixed(2),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(22, 8, 22, 22),
+          child: Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Cancelar'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: FilledButton(
+                  onPressed: _canContinue ? _confirm : null,
+                  child: const Text('Continuar'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _MethodTile extends StatelessWidget {
+  const _MethodTile({
+    required this.method,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final PaymentMethod method;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      decoration: BoxDecoration(
+        color:
+            selected ? AppTheme.purple.withValues(alpha: .22) : AppTheme.surface2,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: selected ? AppTheme.purpleLight : Colors.transparent,
+          width: 1.4,
+        ),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(18),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Row(
+            children: [
+              Icon(
+                selected ? Icons.radio_button_checked : Icons.radio_button_off,
+                color: selected ? AppTheme.purpleLight : AppTheme.textMuted,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      method.nombre,
+                      style: const TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                    if (method.requiereReferencia)
+                      const Text(
+                        'Requiere número de operación',
+                        style: TextStyle(
+                          color: AppTheme.textMuted,
+                          fontSize: 12,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AccountCard extends StatelessWidget {
+  const _AccountCard({required this.account});
+
+  final PaymentAccount account;
+
+  @override
+  Widget build(BuildContext context) {
+    final imageUrl = resolveMediaUrl(account.imagenUrl);
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppTheme.surface2,
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Row(
+        children: [
+          if (imageUrl != null)
+            InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap: () => _showFullScreenQr(context, imageUrl),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: Image.network(
+                  imageUrl,
+                  width: 84,
+                  height: 84,
+                  fit: BoxFit.cover,
+                  errorBuilder:
+                      (_, _, _) => Container(
+                        width: 84,
+                        height: 84,
+                        color: AppTheme.background,
+                        alignment: Alignment.center,
+                        child: const Icon(
+                          Icons.qr_code_2,
+                          color: AppTheme.textMuted,
+                        ),
+                      ),
+                  loadingBuilder: (context, child, progress) {
+                    if (progress == null) return child;
+                    return const SizedBox(
+                      width: 84,
+                      height: 84,
+                      child: Center(
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  account.alias ?? account.nombre ?? 'Cuenta',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w900,
+                    fontSize: 16,
+                  ),
+                ),
+                if (account.banco != null && account.banco!.isNotEmpty)
+                  Text(
+                    account.banco!,
+                    style: const TextStyle(
+                      color: AppTheme.purpleLight,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 13,
+                    ),
+                  ),
+                if (account.numero != null && account.numero!.isNotEmpty)
+                  Text(
+                    'Cuenta: ${account.numero}',
+                    style: const TextStyle(color: AppTheme.textMuted),
+                  ),
+                if (account.cci != null && account.cci!.isNotEmpty)
+                  Text(
+                    'CCI: ${account.cci}',
+                    style: const TextStyle(color: AppTheme.textMuted),
+                  ),
+                const SizedBox(height: 4),
+                Text(
+                  imageUrl != null
+                      ? 'Toca el QR para ampliarlo y mostrárselo al cliente.'
+                      : 'Muéstrale esto al cliente para que pague.',
+                  style: const TextStyle(
+                    color: AppTheme.textMuted,
+                    fontSize: 12,
+                  ),
+                ),
+                if (imageUrl != null) ...[
+                  const SizedBox(height: 4),
+                  // ignore: avoid_print
+                  Text(
+                    'DEBUG: $imageUrl',
+                    style: const TextStyle(color: Colors.orange, fontSize: 9),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showFullScreenQr(BuildContext context, String imageUrl) {
+    showDialog<void>(
+      context: context,
+      barrierColor: Colors.black87,
+      builder:
+          (dialogContext) => Dialog(
+            backgroundColor: Colors.transparent,
+            insetPadding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(20),
+                  child: Image.network(
+                    imageUrl,
+                    errorBuilder:
+                        (_, _, _) => Container(
+                          width: 260,
+                          height: 260,
+                          color: AppTheme.surface,
+                          alignment: Alignment.center,
+                          child: const Icon(
+                            Icons.broken_image_outlined,
+                            size: 48,
+                            color: AppTheme.textMuted,
+                          ),
+                        ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  account.alias ?? account.nombre ?? 'Cuenta',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w900,
+                    fontSize: 18,
+                  ),
+                ),
+                if (account.banco != null && account.banco!.isNotEmpty)
+                  Text(
+                    account.banco!,
+                    style: const TextStyle(
+                      color: AppTheme.purpleLight,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                if (account.numero != null && account.numero!.isNotEmpty)
+                  Text(
+                    'Cuenta: ${account.numero}',
+                    style: const TextStyle(color: Colors.white70),
+                  ),
+                if (account.cci != null && account.cci!.isNotEmpty)
+                  Text(
+                    'CCI: ${account.cci}',
+                    style: const TextStyle(color: Colors.white70),
+                  ),
+                const SizedBox(height: 10),
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('Cerrar'),
+                ),
+              ],
             ),
           ),
     );

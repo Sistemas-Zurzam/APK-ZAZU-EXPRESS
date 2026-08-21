@@ -18,4 +18,11 @@ void main() {
     expect(order.routeGroup, 'Grupo 2');
     expect(order.backpackSequence, 4);
   });
+
+  test('reconoce estados finales usados por el backend', () {
+    expect(DeliveryOrder.fromJson({'estado': 'Entregado'}).isDelivered, isTrue);
+    expect(DeliveryOrder.fromJson({'estado': 'Finalizado'}).isDelivered, isTrue);
+    expect(DeliveryOrder.fromJson({'estado': 'Completado'}).isDelivered, isTrue);
+    expect(DeliveryOrder.fromJson({'estado': 'En ruta'}).isDelivered, isFalse);
+  });
 }

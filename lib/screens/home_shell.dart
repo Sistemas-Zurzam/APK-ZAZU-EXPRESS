@@ -8,15 +8,9 @@ import 'orders_screen.dart';
 import 'profile_screen.dart';
 import 'scanner_screen.dart';
 
-class HomeShell extends ConsumerStatefulWidget {
+class HomeShell extends ConsumerWidget {
   const HomeShell({super.key});
 
-  @override
-  ConsumerState<HomeShell> createState() => _HomeShellState();
-}
-
-class _HomeShellState extends ConsumerState<HomeShell> {
-  int index = 0;
   static const pages = [
     OrdersScreen(),
     ScannerScreen(),
@@ -26,9 +20,11 @@ class _HomeShellState extends ConsumerState<HomeShell> {
   ];
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final user = ref.watch(authProvider).user!;
+    final index = ref.watch(homeTabIndexProvider);
     final showHeader = index != 1 && index != 2;
+    ref.watch(locationTrackingProvider);
 
     return Scaffold(
       body: SafeArea(
@@ -47,7 +43,8 @@ class _HomeShellState extends ConsumerState<HomeShell> {
         top: false,
         child: NavigationBar(
           selectedIndex: index,
-          onDestinationSelected: (value) => setState(() => index = value),
+          onDestinationSelected:
+              (value) => ref.read(homeTabIndexProvider.notifier).state = value,
           destinations: const [
             NavigationDestination(
               icon: Icon(Icons.inventory_2_outlined),

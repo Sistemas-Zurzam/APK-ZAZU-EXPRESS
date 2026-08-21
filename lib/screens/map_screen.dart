@@ -8,6 +8,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../core/google_polyline.dart';
 import '../core/app_theme.dart';
 import '../core/currency_format.dart';
+import '../core/external_navigation.dart';
 import '../models/order.dart';
 import '../state/providers.dart';
 
@@ -43,57 +44,14 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     });
 
     try {
-      var permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-      }
-
-      if (permission != LocationPermission.denied &&
-          permission != LocationPermission.deniedForever) {
-        current = await Geolocator.getCurrentPosition();
-      }
-
-      motoIcon ??= await _assetMarker('assets/images/motorizado.png', 64);
-      final origin = _origin;
-
-      try {
-        final orders = await ref.read(apiProvider).getMyOrders();
-        routeOrders = orders.where((order) => order.hasCoordinates).toList();
-        routeOrders.sort(
-          (left, right) => (left.deliverySequence ?? 1 << 30).compareTo(
-            right.deliverySequence ?? 1 << 30,
-          ),
-        );
-        numberedIcons = await _buildNumberedIcons(routeOrders);
-      } catch (_) {
-        routeOrders = const [];
-        numberedIcons = const {};
-        routeMessage = 'No se pudieron cargar los pedidos asignados.';
-      }
-
-      try {
-        final geometry = await ref
-            .read(apiProvider)
-            .getMyRoute(origin.latitude, origin.longitude);
-        routeSegments = decodeGooglePolylineSegments(geometry.polylines);
-        if (routeSegments.isEmpty) {
-          routeMessage ??= 'El servidor no devolvió un trazado para la ruta.';
-        } else if (_looksLikeStraightLines(routeSegments)) {
-          routeMessage =
-              'El trazado recibido es una línea recta entre paradas: '
-              'no sigue el callejero. Revisa el cálculo de ruta en el servidor.';
-        } else if (!geometry.complete) {
-          routeMessage =
-              'Se muestra una ruta parcial. Algunos tramos no pudieron calcularse.';
-        }
-      } catch (_) {
-        routeSegments = const [];
-        routeMessage ??= 'No se pudo cargar el trazado de la ruta.';
-      }
-
-      if (routeOrders.isEmpty) {
-        routeMessage ??= 'No hay pedidos con coordenadas para mostrar en ruta.';
-      }
+      // Timeout global: sin importar qué se cuelgue adentro (permiso de
+      // ubicación, GPS, red), la pantalla nunca debe quedarse "cargando"
+      // para siempre.
+      await _loadData().timeout(const Duration(seconds: 45));
+    } on TimeoutException {
+      routeOrders = const [];
+      routeSegments = const [];
+      routeMessage = 'La carga del mapa tardó demasiado. Intenta de nuevo.';
     } catch (_) {
       routeOrders = const [];
       routeSegments = const [];
@@ -102,8 +60,97 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       if (mounted) {
         setState(() => loading = false);
         _fitRoute();
+        _focusOnOrder(ref.read(focusedOrderIdProvider));
       }
     }
+  }
+
+  Future<void> _loadData() async {
+    var permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
+
+    if (permission != LocationPermission.denied &&
+        permission != LocationPermission.deniedForever) {
+      try {
+        current = await Geolocator.getCurrentPosition(
+          locationSettings: const LocationSettings(
+            timeLimit: Duration(seconds: 10),
+          ),
+        );
+      } catch (_) {
+        // Sin fix de GPS a tiempo (interiores, señal débil): seguimos con
+        // el origen de respaldo en vez de colgar toda la carga del mapa.
+      }
+    }
+
+    motoIcon ??= await _assetMarker('assets/images/motorizado.png', 64);
+    final origin = _origin;
+
+    try {
+      final orders = await ref.read(apiProvider).getMyOrders();
+      routeOrders = orders.where((order) => order.hasCoordinates).toList();
+      routeOrders.sort(
+        (left, right) => (left.deliverySequence ?? 1 << 30).compareTo(
+          right.deliverySequence ?? 1 << 30,
+        ),
+      );
+      numberedIcons = await _buildNumberedIcons(routeOrders);
+    } catch (_) {
+      routeOrders = const [];
+      numberedIcons = const {};
+      routeMessage = 'No se pudieron cargar los pedidos asignados.';
+    }
+
+    try {
+      final geometry = await ref
+          .read(apiProvider)
+          .getMyRoute(origin.latitude, origin.longitude);
+      routeSegments = decodeGooglePolylineSegments(geometry.polylines);
+      if (routeSegments.isEmpty) {
+        routeMessage ??= 'El servidor no devolvió un trazado para la ruta.';
+      } else if (_looksLikeStraightLines(routeSegments)) {
+        routeMessage =
+            'El trazado recibido es una línea recta entre paradas: '
+            'no sigue el callejero. Revisa el cálculo de ruta en el servidor.';
+      } else if (!geometry.complete) {
+        routeMessage =
+            'Se muestra una ruta parcial. Algunos tramos no pudieron calcularse.';
+      }
+    } catch (_) {
+      routeSegments = const [];
+      routeMessage ??= 'No se pudo cargar el trazado de la ruta.';
+    }
+
+    if (routeOrders.isEmpty) {
+      routeMessage ??= 'No hay pedidos con coordenadas para mostrar en ruta.';
+    }
+  }
+
+  void _focusOnOrder(int? orderId) {
+    if (orderId == null) return;
+    final index = routeOrders.indexWhere((order) => order.id == orderId);
+    final controller = mapController;
+    if (index == -1 || controller == null) return;
+
+    final order = routeOrders[index];
+    unawaited(
+      controller.animateCamera(
+        CameraUpdate.newLatLngZoom(
+          LatLng(order.latitude!, order.longitude!),
+          17,
+        ),
+      ),
+    );
+    unawaited(
+      controller.showMarkerInfoWindow(MarkerId('order_${order.id}_$index')),
+    );
+    ref.read(focusedOrderIdProvider.notifier).state = null;
+  }
+
+  Future<void> _openTurnByTurnNavigation(DeliveryOrder order) async {
+    await openExternalNavigation(context, order);
   }
 
   LatLng get _origin {
@@ -200,6 +247,10 @@ class _MapScreenState extends ConsumerState<MapScreen> {
 
   @override
   Widget build(BuildContext context) {
+    ref.listen<int?>(focusedOrderIdProvider, (previous, next) {
+      if (next != null) _focusOnOrder(next);
+    });
+
     if (loading) return const Center(child: CircularProgressIndicator());
 
     final origin = _origin;
@@ -231,6 +282,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
             title: '$sequence. ${order.externalRef}',
             snippet:
                 '${order.customerName} · ${peruvianCurrency.format(order.amountDue)}',
+            onTap: () => _openTurnByTurnNavigation(order),
           ),
         ),
       );
@@ -257,6 +309,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
           onMapCreated: (controller) {
             mapController = controller;
             _fitRoute();
+            _focusOnOrder(ref.read(focusedOrderIdProvider));
           },
         ),
         Positioned(
@@ -278,9 +331,25 @@ class _MapScreenState extends ConsumerState<MapScreen> {
         Positioned(
           right: 16,
           bottom: 24,
-          child: FloatingActionButton(
-            onPressed: _load,
-            child: const Icon(Icons.my_location),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (routeOrders.isNotEmpty) ...[
+                FloatingActionButton.extended(
+                  heroTag: 'start_navigation',
+                  onPressed: () => _openTurnByTurnNavigation(routeOrders.first),
+                  icon: const Icon(Icons.navigation),
+                  label: const Text('Navegar'),
+                ),
+                const SizedBox(height: 12),
+              ],
+              FloatingActionButton.small(
+                heroTag: 'reload_route',
+                onPressed: _load,
+                tooltip: 'Actualizar ruta',
+                child: const Icon(Icons.refresh),
+              ),
+            ],
           ),
         ),
       ],

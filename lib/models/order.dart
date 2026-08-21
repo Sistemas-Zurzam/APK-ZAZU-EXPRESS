@@ -36,6 +36,37 @@ class DeliveryOrder {
   final Map<String, dynamic> rawJson;
 
   bool get hasCoordinates => latitude != null && longitude != null;
+  bool get isDelivered {
+    final value = status.toLowerCase();
+    return value.contains('entreg') ||
+        value.contains('finaliz') ||
+        value.contains('complet');
+  }
+
+  bool get isInRoute {
+    final value = status.toLowerCase();
+    return value.contains('ruta') || value.contains('recibido');
+  }
+
+  DeliveryOrder withStatus(String newStatus) => DeliveryOrder(
+    id: id,
+    externalRef: externalRef,
+    customerName: customerName,
+    address: address,
+    amountDue: amountDue,
+    status: newStatus,
+    phone: phone,
+    dni: dni,
+    latitude: latitude,
+    longitude: longitude,
+    operationId: operationId,
+    deliverySequence: deliverySequence,
+    routeGroup: routeGroup,
+    backpackSequence: backpackSequence,
+    observations: observations,
+    rawJson: rawJson,
+  );
+
   bool get missingImportantData =>
       customerName == 'Cliente' || dni == null || amountDue <= 0;
 

@@ -6,7 +6,7 @@
 <key>CFBundleName</key><string>zazu_driver</string>
 <key>CFBundleVersion</key><string>$(FLUTTER_BUILD_NUMBER)</string>
 <key>CFBundleShortVersionString</key><string>$(FLUTTER_BUILD_NAME)</string>
-<key>NSCameraUsageDescription</key><string>ZAZU Driver usa la cámara para escanear códigos QR de pedidos.</string>
+<key>NSCameraUsageDescription</key><string>ZAZU Driver usa la cámara para escanear pedidos y registrar fotos de evidencia de entrega.</string>
 <key>NSLocationWhenInUseUsageDescription</key><string>ZAZU Driver usa tu ubicación para calcular y mostrar las rutas de entrega.</string>
 <key>NSAppTransportSecurity</key><dict><key>NSAllowsArbitraryLoads</key><true/></dict>
 <key>UILaunchStoryboardName</key><string>LaunchScreen</string>

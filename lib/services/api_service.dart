@@ -2,6 +2,7 @@ import 'package:dio/dio.dart';
 import '../core/app_config.dart';
 import '../models/app_user.dart';
 import '../models/order.dart';
+import '../models/payment_method.dart';
 import '../models/route_geometry.dart';
 import 'token_storage.dart';
 
@@ -80,11 +81,20 @@ class ApiService {
     return RouteGeometry.fromJson(_asMap(response.data));
   }
 
-  Future<void> confirmReception(int orderId, {int? operationId}) async {
+  Future<void> updateLocation(double lat, double lng) async {
+    await _dio.post('/motorizado/ubicacion', data: {'lat': lat, 'lng': lng});
+  }
+
+  Future<void> confirmReception(
+    String codigo, {
+    int? orderId,
+    int? operationId,
+  }) async {
     await _dio.post(
       '/motorizado/recepcionar',
       data: {
-        'pedido_id': orderId,
+        'codigo': codigo,
+        if (orderId != null) 'pedido_id': orderId,
         if (operationId != null) 'operacion_id': operationId,
       },
     );
@@ -100,22 +110,53 @@ class ApiService {
     );
   }
 
+  Future<List<PaymentMethod>> getPaymentMethods(int orderId) async {
+    final response = await _dio.get('/motorizado/pedidos/$orderId/medios-pago');
+    final list = _extractList(response.data, ['medios_pago']);
+    return list.map((e) => PaymentMethod.fromJson(_asMap(e))).toList();
+  }
+
   Future<void> confirmDelivery(
     int orderId, {
     int? operationId,
-    required String evidencePath,
+    required List<String> evidencePaths,
+    String? medioPago,
+    String? yapeAlias,
+    double? montoEfectivo,
+    String? nroOperacion,
   }) async {
-    final fileName = evidencePath.split(RegExp(r'[\\/]')).last;
+    if (evidencePaths.length != 2) {
+      throw ArgumentError.value(
+        evidencePaths.length,
+        'evidencePaths',
+        'La entrega requiere exactamente dos fotos de evidencia.',
+      );
+    }
+
+    final firstPath = evidencePaths[0];
+    final secondPath = evidencePaths[1];
+    final firstName = firstPath.split(RegExp(r'[\\/]')).last;
+    final secondName = secondPath.split(RegExp(r'[\\/]')).last;
     await _postFirstAvailable(
       ['/apk/confirmar-entrega', '/motorizado/entregar'],
       dataBuilder:
           () => FormData.fromMap({
             'pedido_id': orderId,
             if (operationId != null) 'operacion_id': operationId,
-            'foto_evidencia': MultipartFile.fromFileSync(
-              evidencePath,
-              filename: fileName,
+            // Se conserva `foto` para mantener compatibilidad con el
+            // contrato existente y se agrega la segunda evidencia.
+            'foto': MultipartFile.fromFileSync(firstPath, filename: firstName),
+            'foto_2': MultipartFile.fromFileSync(
+              secondPath,
+              filename: secondName,
             ),
+            if (medioPago != null && medioPago.isNotEmpty)
+              'medio_pago': medioPago,
+            if (yapeAlias != null && yapeAlias.isNotEmpty)
+              'yape_alias': yapeAlias,
+            if (montoEfectivo != null) 'monto_efectivo': montoEfectivo,
+            if (nroOperacion != null && nroOperacion.isNotEmpty)
+              'nro_operacion': nroOperacion,
           }),
     );
   }

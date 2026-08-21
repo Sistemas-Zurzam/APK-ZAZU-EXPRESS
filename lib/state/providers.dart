@@ -5,6 +5,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../models/app_user.dart';
 import '../models/order.dart';
 import '../services/api_service.dart';
+import '../services/location_tracking_service.dart';
 import '../services/token_storage.dart';
 
 final secureStorageProvider = Provider(
@@ -127,6 +128,49 @@ final authProvider = StateNotifierProvider<AuthController, AuthState>((ref) {
   );
 });
 
-final ordersProvider = FutureProvider.autoDispose<List<DeliveryOrder>>((ref) {
-  return ref.watch(apiProvider).getMyOrders();
+final deliveredOrdersProvider = StateProvider<List<DeliveryOrder>>(
+  (ref) => const [],
+);
+
+final ordersProvider = FutureProvider.autoDispose<List<DeliveryOrder>>((
+  ref,
+) async {
+  final serverOrders = await ref.watch(apiProvider).getMyOrders();
+  final localDelivered = ref.watch(deliveredOrdersProvider);
+  final serverIds = serverOrders.map((order) => order.id).toSet();
+  return [
+    ...serverOrders,
+    ...localDelivered.where((order) => !serverIds.contains(order.id)),
+  ];
+});
+
+final homeTabIndexProvider = StateProvider<int>((ref) => 0);
+
+final focusedOrderIdProvider = StateProvider<int?>((ref) => null);
+
+final _locationTrackingServiceProvider = Provider<LocationTrackingService>((
+  ref,
+) {
+  final service = LocationTrackingService(ref.watch(apiProvider));
+  ref.onDispose(service.stop);
+  return service;
+});
+
+/// Arranca/detiene el reporte periódico de ubicación según si el motorizado
+/// tiene algún pedido en ruta ahora mismo. Debe mantenerse "vivo" en algún
+/// widget siempre presente (ver HomeShell) para que el `ref.watch` inicial
+/// lo active.
+final locationTrackingProvider = Provider<void>((ref) {
+  final orders = ref.watch(ordersProvider);
+  final hasActiveRoute = orders.maybeWhen(
+    data: (list) => list.any((order) => order.status.contains('ruta')),
+    orElse: () => false,
+  );
+
+  final service = ref.watch(_locationTrackingServiceProvider);
+  if (hasActiveRoute) {
+    service.start();
+  } else {
+    service.stop();
+  }
 });

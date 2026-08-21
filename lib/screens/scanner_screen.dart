@@ -1,9 +1,14 @@
+import 'dart:async';
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import '../core/app_theme.dart';
 import '../models/order.dart';
 import '../state/providers.dart';
+
+/// Índice de la pestaña "Escáner" en la barra inferior de HomeShell.
+const _scannerTabIndex = 1;
 
 class ScannerScreen extends ConsumerStatefulWidget {
   const ScannerScreen({super.key});
@@ -15,9 +20,21 @@ class ScannerScreen extends ConsumerStatefulWidget {
 class _ScannerScreenState extends ConsumerState<ScannerScreen> {
   final controller = MobileScannerController(
     formats: const [BarcodeFormat.qrCode],
+    autoStart: false,
   );
   String result = 'Escanea el QR de la nota de venta';
   bool handled = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // IndexedStack mantiene esta pantalla montada todo el tiempo, incluso
+    // en pestañas distintas — sin este chequeo, la cámara quedaría prendida
+    // (y detectando códigos de cajas/etiquetas reales) para siempre.
+    if (ref.read(homeTabIndexProvider) == _scannerTabIndex) {
+      unawaited(controller.start());
+    }
+  }
 
   @override
   void dispose() {
@@ -45,13 +62,16 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
         try {
           await ref
               .read(apiProvider)
-              .confirmReception(order.id, operationId: order.operationId);
-        } catch (_) {
+              .confirmReception(
+                order.externalRef,
+                orderId: order.id,
+                operationId: order.operationId,
+              );
+        } catch (error) {
           if (mounted) {
             await _showMessage(
               title: 'No se pudo registrar el pedido',
-              message:
-                  'El servidor rechazó el cambio de estado. El pedido continúa sin registrar.',
+              message: _receptionError(error),
               icon: Icons.sync_problem_outlined,
               color: AppTheme.warning,
             );
@@ -73,6 +93,23 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
     } finally {
       await _resumeScanner();
     }
+  }
+
+  String _receptionError(Object error) {
+    if (error is DioException) {
+      final data = error.response?.data;
+      if (data is Map) {
+        final message = data['message'];
+        if (message != null && message.toString().trim().isNotEmpty) {
+          return message.toString();
+        }
+      }
+      if (error.response?.statusCode != null) {
+        return 'El servidor rechazó el cambio de estado '
+            '(error ${error.response!.statusCode}).';
+      }
+    }
+    return 'El servidor rechazó el cambio de estado. El pedido continúa sin registrar.';
   }
 
   DeliveryOrder? _findOrder(String scanned, List<DeliveryOrder> orders) {
@@ -293,48 +330,62 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
     if (!mounted) return;
     handled = false;
     setState(() => result = 'Escanea el QR de la nota de venta');
-    await controller.start();
+    // No reactivar la cámara si el usuario ya navegó a otra pestaña
+    // mientras se mostraba el resultado del escaneo anterior.
+    if (ref.read(homeTabIndexProvider) == _scannerTabIndex) {
+      await controller.start();
+    }
   }
 
   @override
-  Widget build(BuildContext context) => Stack(
-    children: [
-      MobileScanner(controller: controller, onDetect: _onDetect),
-      Positioned.fill(
-        child: IgnorePointer(
-          child: Center(
-            child: Container(
-              width: 250,
-              height: 250,
-              decoration: BoxDecoration(
-                border: Border.all(color: Colors.white, width: 3),
-                borderRadius: BorderRadius.circular(24),
+  Widget build(BuildContext context) {
+    ref.listen<int>(homeTabIndexProvider, (previous, next) {
+      if (next == _scannerTabIndex) {
+        unawaited(controller.start());
+      } else if (previous == _scannerTabIndex) {
+        unawaited(controller.stop());
+      }
+    });
+
+    return Stack(
+      children: [
+        MobileScanner(controller: controller, onDetect: _onDetect),
+        Positioned.fill(
+          child: IgnorePointer(
+            child: Center(
+              child: Container(
+                width: 250,
+                height: 250,
+                decoration: BoxDecoration(
+                  border: Border.all(color: Colors.white, width: 3),
+                  borderRadius: BorderRadius.circular(24),
+                ),
               ),
             ),
           ),
         ),
-      ),
-      Positioned(
-        left: 20,
-        right: 20,
-        bottom: 28,
-        child: Card(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Row(
-              children: [
-                Expanded(child: Text(result, textAlign: TextAlign.center)),
-                IconButton(
-                  onPressed: controller.toggleTorch,
-                  icon: const Icon(Icons.flashlight_on),
-                ),
-              ],
+        Positioned(
+          left: 20,
+          right: 20,
+          bottom: 28,
+          child: Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  Expanded(child: Text(result, textAlign: TextAlign.center)),
+                  IconButton(
+                    onPressed: controller.toggleTorch,
+                    icon: const Icon(Icons.flashlight_on),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
-      ),
-    ],
-  );
+      ],
+    );
+  }
 }
 
 class _PackingMetric extends StatelessWidget {

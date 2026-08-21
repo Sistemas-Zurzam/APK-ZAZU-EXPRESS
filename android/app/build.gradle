@@ -17,5 +17,15 @@ android {
         versionCode flutter.versionCode
         versionName flutter.versionName
     }
+    buildTypes {
+        release {
+            // Sin esto, el APK release queda sin firmar y Android rechaza
+            // la instalación ("App no instalada"). Firmar con la clave de
+            // depuración permite instalar en cualquier celular para
+            // pruebas; para publicar en Play Store hace falta un keystore
+            // de release propio.
+            signingConfig signingConfigs.debug
+        }
+    }
 }
 flutter { source '../..' }
