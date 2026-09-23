@@ -463,10 +463,15 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
           (context) => DraggableScrollableSheet(
             initialChildSize: .82,
             minChildSize: .5,
-            maxChildSize: .95,
-            builder:
-                (context, controller) =>
-                    _PaymentMethodSheet(order: order, scrollController: controller),
+          maxChildSize: .95,
+          builder:
+                (context, controller) => SafeArea(
+                  top: false,
+                  child: _PaymentMethodSheet(
+                    order: order,
+                    scrollController: controller,
+                  ),
+                ),
           ),
     );
   }
@@ -1094,6 +1099,7 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
   late final Future<List<PaymentMethod>> _future;
   PaymentMethod? _selectedMethod;
   PaymentAccount? _selectedAccount;
+  bool _isMixed = false;
   final _referenceController = TextEditingController();
   final _cashController = TextEditingController();
 
@@ -1117,23 +1123,43 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
         method.nombre.toLowerCase().contains('efectivo');
   }
 
+  bool get _requiresReference => _selectedMethod?.requiereReferencia ?? false;
+
+  double? get _cashAmount => double.tryParse(
+    _cashController.text.trim().replaceAll(',', '.'),
+  );
+
+  double? get _digitalAmount {
+    final cash = _cashAmount;
+    if (cash == null) return null;
+    return widget.order.amountDue - cash;
+  }
+
+  bool _isDigitalMethod(PaymentMethod method) {
+    final value = '${method.codigo} ${method.nombre}'.toLowerCase();
+    return value.contains('yape') || value.contains('transferencia');
+  }
+
   bool get _canContinue {
     final method = _selectedMethod;
     if (method == null) return false;
     if (method.cuentas.isNotEmpty && _selectedAccount == null) return false;
-    if (method.requiereReferencia &&
+    if (_requiresReference &&
         _referenceController.text.trim().isEmpty) {
       return false;
+    }
+    if (_isMixed) {
+      final cash = _cashAmount;
+      if (cash == null || cash <= 0 || cash >= widget.order.amountDue) {
+        return false;
+      }
     }
     return true;
   }
 
   void _confirm() {
     final method = _selectedMethod!;
-    final cashAmount =
-        _isCash
-            ? double.tryParse(_cashController.text.trim().replaceAll(',', '.'))
-            : null;
+    final cashAmount = _isCash || _isMixed ? _cashAmount : null;
     Navigator.pop(
       context,
       _SelectedPayment(
@@ -1141,7 +1167,7 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
         yapeAlias: _selectedAccount?.alias,
         montoEfectivo: cashAmount,
         nroOperacion:
-            method.requiereReferencia
+            _requiresReference
                 ? _referenceController.text.trim()
                 : null,
       ),
@@ -1214,6 +1240,7 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
 
   Widget _buildContent(BuildContext context, List<PaymentMethod> methods) {
     final method = _selectedMethod;
+    final mixedMethods = methods.where(_isDigitalMethod).toList();
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -1241,6 +1268,18 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
                 style: const TextStyle(color: AppTheme.textMuted),
               ),
               const SizedBox(height: 18),
+              if (mixedMethods.isNotEmpty)
+                _MixedPaymentTile(
+                  selected: _isMixed,
+                  onTap: () => setState(() {
+                    _isMixed = true;
+                    _selectedMethod = mixedMethods.first;
+                    _selectedAccount = mixedMethods.first.cuentas.length == 1
+                        ? mixedMethods.first.cuentas.first
+                        : null;
+                    _referenceController.clear();
+                  }),
+                ),
               ...methods.map(
                 (m) => _MethodTile(
                   method: m,
@@ -1248,12 +1287,35 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
                   onTap:
                       () => setState(() {
                         _selectedMethod = m;
+                        _isMixed = false;
                         _selectedAccount =
                             m.cuentas.length == 1 ? m.cuentas.first : null;
                         _referenceController.clear();
+                        _cashController.clear();
                       }),
                 ),
               ),
+              if (_isMixed) ...[
+                const SizedBox(height: 8),
+                const Text(
+                  'Pago digital para el saldo restante',
+                  style: TextStyle(fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: mixedMethods.map((m) => ChoiceChip(
+                    label: Text(m.nombre),
+                    selected: method?.id == m.id,
+                    onSelected: (_) => setState(() {
+                      _selectedMethod = m;
+                      _selectedAccount = m.cuentas.length == 1 ? m.cuentas.first : null;
+                      _referenceController.clear();
+                    }),
+                  )).toList(),
+                ),
+              ],
               if (method != null && method.cuentas.length > 1) ...[
                 const SizedBox(height: 16),
                 const Text(
@@ -1283,7 +1345,7 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
                 const SizedBox(height: 16),
                 _AccountCard(account: _selectedAccount!),
               ],
-              if (method != null && method.requiereReferencia) ...[
+              if (method != null && _requiresReference) ...[
                 const SizedBox(height: 16),
                 TextField(
                   controller: _referenceController,
@@ -1294,23 +1356,44 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
                   ),
                 ),
               ],
-              if (method != null && _isCash) ...[
+              if (method != null && (_isCash || _isMixed)) ...[
                 const SizedBox(height: 16),
                 TextField(
                   controller: _cashController,
+                  onChanged: (_) => setState(() {}),
                   keyboardType: const TextInputType.numberWithOptions(
                     decimal: true,
                   ),
                   decoration: InputDecoration(
-                    labelText: 'Monto cobrado (opcional)',
+                    labelText: _isMixed
+                        ? 'Monto pagado en efectivo'
+                        : 'Monto cobrado (opcional)',
                     hintText: widget.order.amountDue.toStringAsFixed(2),
                   ),
                 ),
+                if (_isMixed) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    _digitalAmount == null
+                        ? 'Ingresa el efectivo para calcular el pago digital.'
+                        : _digitalAmount! <= 0
+                            ? 'El efectivo debe ser menor que el saldo total.'
+                            : 'Pago digital restante: ${peruvianCurrency.format(_digitalAmount!)}',
+                    style: TextStyle(
+                      color: _digitalAmount != null && _digitalAmount! > 0
+                          ? AppTheme.textMuted
+                          : AppTheme.warning,
+                    ),
+                  ),
+                ],
               ],
             ],
           ),
         ),
-        Padding(
+        Container(
+          color: AppTheme.surface,
+          padding: const EdgeInsets.only(top: 8),
+          child: Padding(
           padding: const EdgeInsets.fromLTRB(22, 8, 22, 22),
           child: Row(
             children: [
@@ -1328,6 +1411,7 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
                 ),
               ),
             ],
+          ),
           ),
         ),
       ],
@@ -1387,6 +1471,56 @@ class _MethodTile extends StatelessWidget {
                           fontSize: 12,
                         ),
                       ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MixedPaymentTile extends StatelessWidget {
+  const _MixedPaymentTile({required this.selected, required this.onTap});
+
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      decoration: BoxDecoration(
+        color: selected ? AppTheme.purple.withValues(alpha: .22) : AppTheme.surface2,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: selected ? AppTheme.purpleLight : Colors.transparent,
+          width: 1.4,
+        ),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(18),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Row(
+            children: [
+              Icon(
+                selected ? Icons.radio_button_checked : Icons.radio_button_off,
+                color: selected ? AppTheme.purpleLight : AppTheme.textMuted,
+              ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Pago mixto', style: TextStyle(fontWeight: FontWeight.w800)),
+                    Text(
+                      'Efectivo + Yape o transferencia',
+                      style: TextStyle(color: AppTheme.textMuted, fontSize: 12),
+                    ),
                   ],
                 ),
               ),
