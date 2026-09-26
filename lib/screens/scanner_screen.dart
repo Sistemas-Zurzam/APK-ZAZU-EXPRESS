@@ -5,7 +5,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import '../core/app_theme.dart';
 import '../models/order.dart';
+import '../services/api_service.dart';
 import '../state/providers.dart';
+import '../widgets/packing_order_sheet.dart';
 
 /// Índice de la pestaña "Escáner" en la barra inferior de HomeShell.
 const _scannerTabIndex = 1;
@@ -57,7 +59,14 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
       if (!mounted) return;
 
       if (order == null) {
-        await _showNotFound(value);
+        await _receiveUnlisted(value);
+      } else if (order.isReceived) {
+        await showPackingOrderSheet(
+          context,
+          order,
+          orders.length,
+          alreadyReceived: true,
+        );
       } else {
         try {
           await ref
@@ -68,7 +77,15 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
                 operationId: order.operationId,
               );
         } catch (error) {
-          if (mounted) {
+          if (mounted && ApiService.isAlreadyReceivedError(error)) {
+            ref.invalidate(ordersProvider);
+            await showPackingOrderSheet(
+              context,
+              order,
+              orders.length,
+              alreadyReceived: true,
+            );
+          } else if (mounted) {
             await _showMessage(
               title: 'No se pudo registrar el pedido',
               message: _receptionError(error),
@@ -79,7 +96,8 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
           return;
         }
         ref.invalidate(ordersProvider);
-        await _showPackingOrder(order, orders.length);
+        if (!mounted) return;
+        await showPackingOrderSheet(context, order, orders.length);
       }
     } catch (_) {
       if (mounted) {
@@ -92,6 +110,85 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
       }
     } finally {
       await _resumeScanner();
+    }
+  }
+
+  /// El QR no está en la lista local: puede ser de otro motorizado, estar
+  /// sin asignar o ser nuestro y la lista estar desactualizada. El backend
+  /// decide y, si es nuestro, lo recepciona.
+  Future<void> _receiveUnlisted(String value) async {
+    try {
+      await ref.read(apiProvider).confirmReception(value);
+    } catch (error) {
+      if (!mounted) return;
+      await _showReceptionRejected(value, error);
+      return;
+    }
+    ref.invalidate(ordersProvider);
+    final orders = await ref.read(ordersProvider.future);
+    if (!mounted) return;
+    final order = _findOrder(value, orders);
+    if (order != null) {
+      await showPackingOrderSheet(context, order, orders.length);
+    } else {
+      await _showMessage(
+        title: 'Pedido recepcionado',
+        message: 'El pedido “$value” quedó recepcionado.',
+        icon: Icons.check_circle_outline,
+        color: AppTheme.success,
+      );
+    }
+  }
+
+  Future<void> _showReceptionRejected(String value, Object error) async {
+    final response = error is DioException ? error.response : null;
+    final data = response?.data;
+    final motivo = data is Map ? data['motivo']?.toString() : null;
+    final serverMessage =
+        data is Map ? data['message']?.toString().trim() : null;
+
+    if (ApiService.isAlreadyReceivedError(error)) {
+      await _showMessage(
+        title: 'Pedido ya recepcionado',
+        message: serverMessage ?? 'Este pedido ya fue registrado.',
+        icon: Icons.warning_amber_rounded,
+        color: AppTheme.warning,
+      );
+    } else if (motivo == 'otro_motorizado') {
+      await _showMessage(
+        title: 'Pedido de otro motorizado',
+        message:
+            '${serverMessage ?? 'Este pedido no está asignado a ti.'} '
+            'No lo cargues en tu mochila.',
+        icon: Icons.assignment_ind_outlined,
+        color: AppTheme.danger,
+      );
+    } else if (motivo == 'sin_asignar') {
+      await _showMessage(
+        title: 'Pedido sin asignar',
+        message:
+            '${serverMessage ?? 'Este pedido aún no ha sido asignado.'} '
+            'Consulta con tu supervisor antes de llevarlo.',
+        icon: Icons.person_off_outlined,
+        color: AppTheme.warning,
+      );
+    } else if (response?.statusCode == 403) {
+      // Backend anterior, sin `motivo`.
+      await _showMessage(
+        title: 'Pedido no asignado a ti',
+        message: serverMessage ?? 'Este pedido no está asignado a ti.',
+        icon: Icons.assignment_ind_outlined,
+        color: AppTheme.danger,
+      );
+    } else if (response?.statusCode == 404) {
+      await _showNotFound(value);
+    } else {
+      await _showMessage(
+        title: 'No se pudo registrar el pedido',
+        message: _receptionError(error),
+        icon: Icons.sync_problem_outlined,
+        color: AppTheme.warning,
+      );
     }
   }
 
@@ -108,6 +205,10 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
         return 'El servidor rechazó el cambio de estado '
             '(error ${error.response!.statusCode}).';
       }
+      // Sin respuesta: el servidor tardó demasiado o no hubo conexión. La
+      // recepción pudo registrarse igual, por eso se pide revisar la lista.
+      return 'El servidor no respondió a tiempo. Revisa en "Pedidos" si quedó '
+          'recepcionado antes de volver a escanear.';
     }
     return 'El servidor rechazó el cambio de estado. El pedido continúa sin registrar.';
   }
@@ -126,164 +227,9 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
   String _normalize(String value) =>
       Uri.decodeFull(value).replaceAll(RegExp(r'\s+'), '').toUpperCase();
 
-  Future<void> _showPackingOrder(DeliveryOrder order, int totalOrders) async {
-    final deliveryOrder = order.deliverySequence;
-    final backpackOrder =
-        order.backpackSequence ??
-        (deliveryOrder == null ? null : totalOrders - deliveryOrder + 1);
-
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder:
-          (context) => SafeArea(
-            child: Container(
-              margin: const EdgeInsets.all(16),
-              padding: const EdgeInsets.fromLTRB(22, 14, 22, 24),
-              decoration: BoxDecoration(
-                color: AppTheme.surface,
-                borderRadius: BorderRadius.circular(30),
-                border: Border.all(color: AppTheme.purpleLight, width: 1.5),
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    width: 48,
-                    height: 5,
-                    decoration: BoxDecoration(
-                      color: AppTheme.textMuted,
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                  ),
-                  const SizedBox(height: 18),
-                  const Icon(
-                    Icons.inventory_2_outlined,
-                    size: 52,
-                    color: AppTheme.purpleLight,
-                  ),
-                  const SizedBox(height: 10),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 8,
-                    ),
-                    decoration: BoxDecoration(
-                      color: AppTheme.success.withValues(alpha: .16),
-                      borderRadius: BorderRadius.circular(30),
-                      border: Border.all(color: AppTheme.success),
-                    ),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.check_circle_outline,
-                          color: AppTheme.success,
-                        ),
-                        SizedBox(width: 7),
-                        Text(
-                          '¡PEDIDO RECEPCIONADO!',
-                          style: TextStyle(
-                            color: AppTheme.success,
-                            fontWeight: FontWeight.w900,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  Text(
-                    order.externalRef,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.w900,
-                    ),
-                  ),
-                  const SizedBox(height: 5),
-                  Text(
-                    order.customerName,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(color: AppTheme.textMuted),
-                  ),
-                  const SizedBox(height: 22),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _PackingMetric(
-                          label: 'GRUPO',
-                          value: order.routeGroup ?? 'No informado',
-                          icon: Icons.group_work_outlined,
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: _PackingMetric(
-                          label: 'ORDEN DE ENTREGA',
-                          value:
-                              deliveryOrder == null ? '—' : '#$deliveryOrder',
-                          icon: Icons.route_outlined,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(18),
-                    decoration: BoxDecoration(
-                      color: AppTheme.purple.withValues(alpha: .18),
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Column(
-                      children: [
-                        const Text(
-                          'ORDEN DE CARGA EN MOCHILA',
-                          style: TextStyle(
-                            color: AppTheme.textMuted,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          backpackOrder == null
-                              ? 'No informado'
-                              : '#$backpackOrder',
-                          style: const TextStyle(
-                            color: AppTheme.purpleLight,
-                            fontSize: 38,
-                            fontWeight: FontWeight.w900,
-                          ),
-                        ),
-                        if (order.backpackSequence == null &&
-                            backpackOrder != null)
-                          const Text(
-                            'Calculado en orden inverso de entrega',
-                            style: TextStyle(color: AppTheme.textMuted),
-                          ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 18),
-                  SizedBox(
-                    width: double.infinity,
-                    child: FilledButton.icon(
-                      onPressed: () => Navigator.pop(context),
-                      icon: const Icon(Icons.qr_code_scanner),
-                      label: const Text('Escanear siguiente'),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-    );
-  }
-
   Future<void> _showNotFound(String value) => _showMessage(
     title: 'Pedido no encontrado',
-    message: 'El QR “$value” no corresponde a tus pedidos activos.',
+    message: 'El QR “$value” no corresponde a ningún pedido de ZAZU.',
     icon: Icons.search_off_outlined,
     color: AppTheme.warning,
   );
@@ -386,46 +332,4 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
       ],
     );
   }
-}
-
-class _PackingMetric extends StatelessWidget {
-  const _PackingMetric({
-    required this.label,
-    required this.value,
-    required this.icon,
-  });
-
-  final String label;
-  final String value;
-  final IconData icon;
-
-  @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.all(14),
-    decoration: BoxDecoration(
-      color: AppTheme.background,
-      borderRadius: BorderRadius.circular(18),
-    ),
-    child: Column(
-      children: [
-        Icon(icon, color: AppTheme.purpleLight),
-        const SizedBox(height: 7),
-        Text(
-          label,
-          textAlign: TextAlign.center,
-          style: const TextStyle(
-            color: AppTheme.textMuted,
-            fontSize: 11,
-            fontWeight: FontWeight.w800,
-          ),
-        ),
-        const SizedBox(height: 3),
-        Text(
-          value,
-          textAlign: TextAlign.center,
-          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
-        ),
-      ],
-    ),
-  );
 }

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'core/app_theme.dart';
 import 'screens/home_shell.dart';
@@ -34,6 +35,10 @@ class _ZazuDriverAppState extends ConsumerState<ZazuDriverApp> {
       debugShowCheckedModeBanner: false,
       title: 'ZAZU Driver',
       theme: AppTheme.dark,
+      // Calendarios y diálogos del sistema en español.
+      locale: const Locale('es', 'PE'),
+      supportedLocales: const [Locale('es', 'PE'), Locale('es')],
+      localizationsDelegates: GlobalMaterialLocalizations.delegates,
       home: !restored
           ? const Scaffold(body: Center(child: CircularProgressIndicator()))
           : auth.authenticated

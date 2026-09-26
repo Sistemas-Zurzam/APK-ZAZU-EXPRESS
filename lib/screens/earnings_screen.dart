@@ -8,7 +8,9 @@ class EarningsScreen extends ConsumerWidget {
   const EarningsScreen({super.key});
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final orders = ref.watch(ordersProvider).valueOrNull ?? [];
+    final orders = (ref.watch(ordersProvider).valueOrNull ?? [])
+        .where((order) => !order.isDelivered)
+        .toList();
     final total = orders.fold<double>(0, (sum, item) => sum + item.amountDue);
     return Padding(
       padding: const EdgeInsets.all(24),

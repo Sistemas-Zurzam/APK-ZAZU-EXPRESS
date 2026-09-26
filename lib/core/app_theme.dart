@@ -11,6 +11,7 @@ class AppTheme {
   static const success = Color(0xFF22C55E);
   static const warning = Color(0xFFF59E0B);
   static const danger = Color(0xFFEF4444);
+  static const info = Color(0xFF38BDF8);
 
   static ThemeData get dark {
     final scheme = ColorScheme.fromSeed(

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -6,10 +8,13 @@ import '../core/app_theme.dart';
 import '../core/currency_format.dart';
 import '../core/external_navigation.dart';
 import '../core/media_url.dart';
+import '../core/route_rules.dart';
 import '../models/order.dart';
 import '../models/payment_method.dart';
+import '../services/api_service.dart';
 import '../state/providers.dart';
 import '../widgets/order_card.dart';
+import '../widgets/packing_order_sheet.dart';
 
 class OrdersScreen extends ConsumerStatefulWidget {
   const OrdersScreen({super.key});
@@ -20,10 +25,48 @@ class OrdersScreen extends ConsumerStatefulWidget {
 
 class _OrdersScreenState extends ConsumerState<OrdersScreen> {
   String selected = 'asignados';
-  bool processingAction = false;
+  // Acción en curso ('primary' / 'route'); el bottom sheet la escucha
+  // porque setState del screen no reconstruye el modal.
+  final _runningAction = ValueNotifier<String?>(null);
+
+  /// Fotos y montos ya cargados en el cobro, por pedido. Si el envío falla
+  /// (servidor lento, sin señal), al reintentar siguen ahí y no hay que
+  /// volver a tomar las fotos.
+  final _deliveryDrafts = <int, _DeliveryDraft>{};
+
+  @override
+  void dispose() {
+    _runningAction.dispose();
+    super.dispose();
+  }
+
+  /// El mapa pidió entregar un pedido: se muestra En ruta, se abre su
+  /// detalle y arranca el cobro directamente.
+  void _handleDeliverRequest(int? orderId) {
+    if (orderId == null) return;
+    ref.read(deliverOrderRequestProvider.notifier).state = null;
+    setState(() => selected = 'ruta');
+    final items = ref.read(ordersProvider).valueOrNull ?? const [];
+    final routeOrders = items.where((order) => order.isInRoute).toList();
+    final index = routeOrders.indexWhere((order) => order.id == orderId);
+    if (index == -1) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _showOrderDetails(
+        context,
+        routeOrders[index],
+        index + 1,
+        startDelivery: true,
+      );
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
+    ref.listen<int?>(
+      deliverOrderRequestProvider,
+      (_, orderId) => _handleDeliverRequest(orderId),
+    );
     final orders = ref.watch(ordersProvider);
 
     return RefreshIndicator(
@@ -125,13 +168,16 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
 
   List<DeliveryOrder> _filterOrders(List<DeliveryOrder> items) {
     switch (selected) {
+      case 'recepcionados':
+        return items.where((order) => order.isRecepcionado).toList();
       case 'ruta':
         return items.where((order) => order.isInRoute).toList();
       case 'entregados':
         return items.where((order) => order.isDelivered).toList();
       default:
         return items
-            .where((order) => !order.isDelivered && !order.isInRoute)
+            // Asignados: todavía sin recepcionar.
+            .where((order) => !order.isReceived)
             .toList();
     }
   }
@@ -151,8 +197,12 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
   void _showOrderDetails(
     BuildContext context,
     DeliveryOrder order,
-    int sequence,
-  ) {
+    int sequence, {
+    bool startDelivery = false,
+  }) {
+    var deliveryStarted = !startDelivery;
+    // Mismo total que usa el escáner para calcular el orden en mochila.
+    final totalOrders = ref.read(ordersProvider).valueOrNull?.length ?? 0;
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -162,202 +212,283 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
             initialChildSize: .68,
             minChildSize: .48,
             maxChildSize: .92,
-            builder:
-                (context, controller) => Container(
-                  decoration: const BoxDecoration(
-                    color: AppTheme.surface,
-                    borderRadius: BorderRadius.vertical(
-                      top: Radius.circular(30),
-                    ),
-                  ),
-                  child: ListView(
-                    controller: controller,
-                    padding: const EdgeInsets.fromLTRB(22, 12, 22, 32),
-                    children: [
-                      Center(
-                        child: Container(
-                          width: 48,
-                          height: 5,
-                          decoration: BoxDecoration(
-                            color: Colors.white24,
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 20),
-                      Row(
-                        children: [
-                          Container(
-                            width: 46,
-                            height: 46,
-                            alignment: Alignment.center,
-                            decoration: BoxDecoration(
-                              gradient: const LinearGradient(
-                                colors: [AppTheme.purple, AppTheme.purpleLight],
-                              ),
-                              borderRadius: BorderRadius.circular(15),
-                            ),
-                            child: Text(
-                              '$sequence',
-                              style: const TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.w900,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 13),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const Text(
-                                  'Detalle del pedido',
-                                  style: TextStyle(
-                                    color: AppTheme.textMuted,
-                                    fontSize: 13,
-                                  ),
-                                ),
-                                Text(
-                                  order.externalRef,
-                                  style: const TextStyle(
-                                    fontSize: 21,
-                                    fontWeight: FontWeight.w900,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          IconButton(
-                            onPressed: () => Navigator.pop(context),
-                            icon: const Icon(Icons.close),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 22),
-                      _DetailTile(
-                        icon: Icons.person_outline,
-                        label: 'Cliente',
-                        value: order.customerName,
-                      ),
-                      _DetailTile(
-                        icon: Icons.badge_outlined,
-                        label: 'DNI',
-                        value: order.dni ?? 'No registrado',
-                      ),
-                      _DetailTile(
-                        icon: Icons.phone_outlined,
-                        label: 'Teléfono',
-                        value: order.phone ?? 'No registrado',
-                      ),
-                      _DetailTile(
-                        icon: Icons.location_on_outlined,
-                        label: 'Dirección',
-                        value: order.address,
-                      ),
-                      if (order.observations != null)
-                        _DetailTile(
-                          icon: Icons.notes_outlined,
-                          label: 'Observaciones',
-                          value: order.observations!,
-                        ),
-                      _DetailTile(
-                        icon: Icons.payments_outlined,
-                        label: 'Monto a cobrar',
-                        value: peruvianCurrency.format(order.amountDue),
-                        valueColor:
-                            order.amountDue > 0
-                                ? AppTheme.success
-                                : AppTheme.textMuted,
-                      ),
-                      _DetailTile(
-                        icon: Icons.local_shipping_outlined,
-                        label: 'Estado',
-                        value: order.status,
-                      ),
-                      const SizedBox(height: 20),
-                      _OrderActions(
-                        order: order,
-                        processing: processingAction,
-                        onReception:
-                            () => _runOrderAction(
-                              context,
-                              successMessage: 'Pedido recepcionado.',
-                              action:
-                                  () => ref
-                                      .read(apiProvider)
-                                      .confirmReception(
-                                        order.externalRef,
-                                        orderId: order.id,
-                                        operationId: order.operationId,
-                                      ),
-                            ),
-                        onStartRoute:
-                            () => _runOrderAction(
-                              context,
-                              successMessage: 'Ruta iniciada.',
-                              action:
-                                  () => ref
-                                      .read(apiProvider)
-                                      .startRoute(
-                                        order.id,
-                                        operationId: order.operationId,
-                                      ),
-                              onSuccess: () => _focusOnRouteMap(order),
-                            ),
-                        onDeliver: () => _deliverWithEvidence(context, order),
-                        onReschedule:
-                            () => _showRescheduleDialog(context, order),
-                        onMap:
-                            order.hasCoordinates
-                                ? () {
-                                  Navigator.pop(context);
-                                  _openNavigation(context, order);
-                                }
-                                : null,
-                      ),
-                      const SizedBox(height: 10),
-                      OutlinedButton.icon(
-                        onPressed: () => Navigator.pop(context),
-                        icon: const Icon(Icons.arrow_back),
-                        label: const Text('Cerrar detalle'),
-                        style: OutlinedButton.styleFrom(
-                          minimumSize: const Size.fromHeight(52),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(18),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
+            builder: (context, controller) {
+              if (!deliveryStarted) {
+                deliveryStarted = true;
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (context.mounted) _deliverWithEvidence(context, order);
+                });
+              }
+              return Container(
+                decoration: const BoxDecoration(
+                  color: AppTheme.surface,
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
                 ),
+                child: ListView(
+                  controller: controller,
+                  padding: const EdgeInsets.fromLTRB(22, 12, 22, 32),
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 48,
+                        height: 5,
+                        decoration: BoxDecoration(
+                          color: Colors.white24,
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    Row(
+                      children: [
+                        Container(
+                          width: 46,
+                          height: 46,
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            gradient: const LinearGradient(
+                              colors: [AppTheme.purple, AppTheme.purpleLight],
+                            ),
+                            borderRadius: BorderRadius.circular(15),
+                          ),
+                          child: Text(
+                            '$sequence',
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 13),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'Detalle del pedido',
+                                style: TextStyle(
+                                  color: AppTheme.textMuted,
+                                  fontSize: 13,
+                                ),
+                              ),
+                              Text(
+                                order.externalRef,
+                                style: const TextStyle(
+                                  fontSize: 21,
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          onPressed: () => Navigator.pop(context),
+                          icon: const Icon(Icons.close),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 22),
+                    _DetailTile(
+                      icon: Icons.person_outline,
+                      label: 'Cliente',
+                      value: order.customerName,
+                    ),
+                    _DetailTile(
+                      icon: Icons.badge_outlined,
+                      label: 'DNI',
+                      value: order.dni ?? 'No registrado',
+                    ),
+                    _DetailTile(
+                      icon: Icons.phone_outlined,
+                      label: 'Teléfono',
+                      value: order.phone ?? 'No registrado',
+                    ),
+                    _DetailTile(
+                      icon: Icons.location_on_outlined,
+                      label: 'Dirección',
+                      value: order.address,
+                    ),
+                    if (order.observations != null)
+                      _DetailTile(
+                        icon: Icons.notes_outlined,
+                        label: 'Observaciones',
+                        value: order.observations!,
+                      ),
+                    _DetailTile(
+                      icon: Icons.payments_outlined,
+                      label: 'Monto a cobrar',
+                      value: peruvianCurrency.format(order.amountDue),
+                      valueColor:
+                          order.amountDue > 0
+                              ? AppTheme.success
+                              : AppTheme.textMuted,
+                    ),
+                    _DetailTile(
+                      icon: Icons.local_shipping_outlined,
+                      label: 'Estado',
+                      value: order.status,
+                    ),
+                    const SizedBox(height: 20),
+                    ValueListenableBuilder<String?>(
+                      valueListenable: _runningAction,
+                      builder:
+                          (context, runningAction, _) => _OrderActions(
+                            order: order,
+                            runningAction: runningAction,
+                            onReception:
+                                () =>
+                                    _receiveOrder(context, order, totalOrders),
+                            onStartRoute: () {
+                              final blocked = startRouteBlockReason(
+                                order,
+                                ref.read(ordersProvider).valueOrNull ??
+                                    const [],
+                              );
+                              if (blocked != null) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(content: Text(blocked)),
+                                );
+                                return;
+                              }
+                              _runOrderAction(
+                                context,
+                                actionKey: 'route',
+                                successMessage: 'Ruta iniciada.',
+                                action:
+                                    () => ref
+                                        .read(apiProvider)
+                                        .startRoute(
+                                          order.id,
+                                          operationId: order.operationId,
+                                        ),
+                                onSuccess: () => _focusOnRouteMap(order),
+                              );
+                            },
+                            onDeliver:
+                                () => _deliverWithEvidence(context, order),
+                            onReschedule:
+                                () => _showRescheduleDialog(context, order),
+                            onMap:
+                                order.hasCoordinates
+                                    ? () {
+                                      Navigator.pop(context);
+                                      _openNavigation(context, order);
+                                    }
+                                    : null,
+                          ),
+                    ),
+                    const SizedBox(height: 10),
+                    OutlinedButton.icon(
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.arrow_back),
+                      label: const Text('Cerrar detalle'),
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: const Size.fromHeight(52),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(18),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
           ),
     );
   }
 
+  /// Tras recepcionar desde el detalle se muestra el mismo resultado que al
+  /// escanear (grupo, orden de entrega y orden de carga en mochila).
+  /// Un pedido ya recepcionado no se vuelve a enviar: se avisa y se muestra
+  /// su orden en mochila. Si la lista local estaba desactualizada y el backend
+  /// responde que ya estaba recepcionado, se muestra el mismo aviso.
+  Future<void> _receiveOrder(
+    BuildContext sheetContext,
+    DeliveryOrder order,
+    int totalOrders,
+  ) async {
+    if (order.isReceived) {
+      Navigator.pop(sheetContext);
+      await _showReceptionResult(order, totalOrders, alreadyReceived: true);
+      return;
+    }
+    var alreadyReceived = false;
+    await _runOrderAction(
+      sheetContext,
+      actionKey: 'primary',
+      action: () async {
+        try {
+          await ref
+              .read(apiProvider)
+              .confirmReception(
+                order.externalRef,
+                orderId: order.id,
+                operationId: order.operationId,
+              );
+        } catch (error) {
+          if (!ApiService.isAlreadyReceivedError(error)) rethrow;
+          alreadyReceived = true;
+        }
+      },
+      onSuccess:
+          () => _showReceptionResult(
+            order,
+            totalOrders,
+            alreadyReceived: alreadyReceived,
+          ),
+    );
+  }
+
+  /// [totalOrders] se toma antes de recepcionar: después ordersProvider se
+  /// invalida y la lista puede estar vacía mientras recarga.
+  Future<void> _showReceptionResult(
+    DeliveryOrder order,
+    int totalOrders, {
+    bool alreadyReceived = false,
+  }) async {
+    if (!mounted) return;
+    await showPackingOrderSheet(
+      context,
+      order,
+      totalOrders,
+      alreadyReceived: alreadyReceived,
+    );
+    // "Escanear siguiente" lleva a la pestaña del escáner.
+    if (mounted) ref.read(homeTabIndexProvider.notifier).state = 1;
+  }
+
   Future<void> _runOrderAction(
     BuildContext context, {
+    required String actionKey,
     required Future<void> Function() action,
-    required String successMessage,
+    String? successMessage,
     VoidCallback? onSuccess,
+    void Function(String message)? onError,
   }) async {
-    if (processingAction) return;
-    setState(() => processingAction = true);
+    if (_runningAction.value != null) return;
+    _runningAction.value = actionKey;
     try {
       await action();
       ref.invalidate(ordersProvider);
       if (!context.mounted) return;
       Navigator.pop(context);
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(successMessage)));
+      if (successMessage != null) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(successMessage)));
+      }
       onSuccess?.call();
     } catch (error) {
       if (!context.mounted) return;
+      if (onError != null) {
+        onError(_actionError(error));
+        return;
+      }
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text(_actionError(error))));
     } finally {
-      if (mounted) setState(() => processingAction = false);
+      _runningAction.value = null;
     }
   }
 
@@ -365,6 +496,89 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
     BuildContext context,
     DeliveryOrder order,
   ) async {
+    final draft = _deliveryDrafts.putIfAbsent(order.id, _DeliveryDraft.new);
+    _SelectedPayment? payment;
+    if (order.amountDue > 0) {
+      payment = await _selectPaymentMethod(context, order, draft);
+      if (payment == null || !context.mounted) return;
+    }
+
+    // En pago mixto las fotos ya se tomaron en la pantalla de cobro.
+    final evidencePaths =
+        payment?.evidencePaths ?? await _takeDeliveryPhotos(context);
+    if (evidencePaths == null || !context.mounted) return;
+
+    await _runOrderAction(
+      context,
+      actionKey: 'primary',
+      successMessage:
+          payment?.paymentProofPath != null
+              ? 'Pedido entregado con tres evidencias.'
+              : 'Pedido entregado con dos evidencias.',
+      onError: (message) => _showDeliveryError(context, order, message),
+      onSuccess: () {
+        _deliveryDrafts.remove(order.id);
+        final delivered = order.withStatus('entregado');
+        final notifier = ref.read(deliveredOrdersProvider.notifier);
+        notifier.state = [
+          delivered,
+          ...notifier.state.where((item) => item.id != order.id),
+        ];
+        setState(() => selected = 'entregados');
+      },
+      action:
+          () => ref
+              .read(apiProvider)
+              .confirmDelivery(
+                order.id,
+                operationId: order.operationId,
+                evidencePaths: evidencePaths,
+                medioPago: payment?.medioPago,
+                yapeAlias: payment?.yapeAlias,
+                montoEfectivo: payment?.montoEfectivo,
+                nroOperacion: payment?.nroOperacion,
+                paymentProofPath: payment?.paymentProofPath,
+              ),
+    );
+  }
+
+  /// El error se muestra completo (un snackbar desaparece antes de leerlo)
+  /// y se ofrece reintentar con las mismas fotos.
+  Future<void> _showDeliveryError(
+    BuildContext context,
+    DeliveryOrder order,
+    String message,
+  ) async {
+    final retry = await showDialog<bool>(
+      context: context,
+      builder:
+          (dialogContext) => AlertDialog(
+            icon: const Icon(Icons.cloud_off_outlined, color: AppTheme.warning),
+            title: const Text('No se pudo registrar la entrega'),
+            content: Text(
+              '$message\n\nTus fotos y datos del cobro se guardaron: al '
+              'reintentar no tienes que tomarlas de nuevo.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('Cerrar'),
+              ),
+              FilledButton.icon(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                icon: const Icon(Icons.refresh),
+                label: const Text('Reintentar'),
+              ),
+            ],
+          ),
+    );
+    if (retry == true && context.mounted) {
+      await _deliverWithEvidence(context, order);
+    }
+  }
+
+  /// Dos fotos consecutivas con la cámara. Devuelve null si se cancela.
+  Future<List<String>?> _takeDeliveryPhotos(BuildContext context) async {
     final proceed = await showDialog<bool>(
       context: context,
       builder:
@@ -387,13 +601,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
             ],
           ),
     );
-    if (proceed != true || !context.mounted) return;
-
-    _SelectedPayment? payment;
-    if (order.amountDue > 0) {
-      payment = await _selectPaymentMethod(context, order);
-      if (payment == null || !context.mounted) return;
-    }
+    if (proceed != true || !context.mounted) return null;
 
     final picker = ImagePicker();
     final firstImage = await picker.pickImage(
@@ -401,7 +609,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
       imageQuality: 78,
       maxWidth: 1600,
     );
-    if (firstImage == null || !context.mounted) return;
+    if (firstImage == null || !context.mounted) return null;
 
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Primera foto lista. Toma la segunda.')),
@@ -411,7 +619,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
       imageQuality: 78,
       maxWidth: 1600,
     );
-    if (secondImage == null || !context.mounted) {
+    if (secondImage == null) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -421,39 +629,15 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
           ),
         );
       }
-      return;
+      return null;
     }
-
-    await _runOrderAction(
-      context,
-      successMessage: 'Pedido entregado con dos evidencias.',
-      onSuccess: () {
-        final delivered = order.withStatus('entregado');
-        final notifier = ref.read(deliveredOrdersProvider.notifier);
-        notifier.state = [
-          delivered,
-          ...notifier.state.where((item) => item.id != order.id),
-        ];
-        setState(() => selected = 'entregados');
-      },
-      action:
-          () => ref
-              .read(apiProvider)
-              .confirmDelivery(
-                order.id,
-                operationId: order.operationId,
-                evidencePaths: [firstImage.path, secondImage.path],
-                medioPago: payment?.medioPago,
-                yapeAlias: payment?.yapeAlias,
-                montoEfectivo: payment?.montoEfectivo,
-                nroOperacion: payment?.nroOperacion,
-              ),
-    );
+    return [firstImage.path, secondImage.path];
   }
 
   Future<_SelectedPayment?> _selectPaymentMethod(
     BuildContext context,
     DeliveryOrder order,
+    _DeliveryDraft draft,
   ) {
     return showModalBottomSheet<_SelectedPayment>(
       context: context,
@@ -463,12 +647,13 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
           (context) => DraggableScrollableSheet(
             initialChildSize: .82,
             minChildSize: .5,
-          maxChildSize: .95,
-          builder:
+            maxChildSize: .95,
+            builder:
                 (context, controller) => SafeArea(
                   top: false,
                   child: _PaymentMethodSheet(
                     order: order,
+                    draft: draft,
                     scrollController: controller,
                   ),
                 ),
@@ -480,60 +665,25 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
     BuildContext context,
     DeliveryOrder order,
   ) async {
-    final reasonController = TextEditingController();
-    final dateController = TextEditingController();
     final result = await showDialog<({String reason, String date})>(
       context: context,
-      builder:
-          (context) => AlertDialog(
-            title: const Text('Reprogramar pedido'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: reasonController,
-                  decoration: const InputDecoration(labelText: 'Motivo'),
-                  textCapitalization: TextCapitalization.sentences,
-                ),
-                const SizedBox(height: 10),
-                TextField(
-                  controller: dateController,
-                  decoration: const InputDecoration(
-                    labelText: 'Nueva fecha',
-                    hintText: 'YYYY-MM-DD',
-                  ),
-                  keyboardType: TextInputType.datetime,
-                ),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Cancelar'),
-              ),
-              FilledButton(
-                onPressed: () {
-                  final reason = reasonController.text.trim();
-                  final date = dateController.text.trim();
-                  if (reason.isEmpty || date.isEmpty) return;
-                  Navigator.pop(context, (reason: reason, date: date));
-                },
-                child: const Text('Enviar'),
-              ),
-            ],
-          ),
+      builder: (context) => const _RescheduleDialog(),
     );
-    reasonController.dispose();
-    dateController.dispose();
     if (result == null || !context.mounted) return;
 
     await _runOrderAction(
       context,
+      actionKey: 'reschedule',
       successMessage: 'Pedido reprogramado.',
       action:
           () => ref
               .read(apiProvider)
-              .rescheduleOrder(order.id, result.reason, result.date),
+              .rescheduleOrder(
+                order.id,
+                result.reason,
+                result.date,
+                operationId: order.operationId,
+              ),
     );
   }
 
@@ -565,10 +715,220 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
   }
 }
 
+/// Motivo y nueva fecha. La fecha se elige en un calendario (desde mañana)
+/// y se envía como YYYY-MM-DD, el formato que espera el backend.
+/// Casilla de una foto de evidencia: vacía invita a tomarla; con foto
+/// muestra la miniatura y permite cambiarla o quitarla.
+class _EvidenceSlot extends StatelessWidget {
+  const _EvidenceSlot({
+    required this.label,
+    required this.caption,
+    required this.required,
+    required this.photo,
+    required this.onPick,
+    required this.onRemove,
+  });
+
+  final String label;
+  final String caption;
+  final bool required;
+  final XFile? photo;
+  final VoidCallback onPick;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final image = photo;
+    return AspectRatio(
+      aspectRatio: .8,
+      child: Material(
+        color: AppTheme.surface2,
+        clipBehavior: Clip.antiAlias,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(
+            color:
+                image != null
+                    ? AppTheme.success
+                    : (required ? AppTheme.warning : AppTheme.surface2),
+          ),
+        ),
+        child: InkWell(
+          onTap: onPick,
+          child:
+              image == null
+                  ? Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Icon(
+                        Icons.add_a_photo_outlined,
+                        color: AppTheme.purpleLight,
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        label,
+                        style: const TextStyle(fontWeight: FontWeight.w800),
+                      ),
+                      Text(
+                        caption,
+                        style: const TextStyle(
+                          color: AppTheme.textMuted,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                  )
+                  : Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      Image.file(File(image.path), fit: BoxFit.cover),
+                      Positioned(
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        child: Container(
+                          color: Colors.black54,
+                          padding: const EdgeInsets.symmetric(vertical: 3),
+                          child: Text(
+                            label,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ),
+                      ),
+                      Positioned(
+                        top: 2,
+                        right: 2,
+                        child: IconButton.filled(
+                          tooltip: 'Quitar $label',
+                          visualDensity: VisualDensity.compact,
+                          iconSize: 16,
+                          style: IconButton.styleFrom(
+                            backgroundColor: Colors.black54,
+                          ),
+                          onPressed: onRemove,
+                          icon: const Icon(Icons.close),
+                        ),
+                      ),
+                    ],
+                  ),
+        ),
+      ),
+    );
+  }
+}
+
+class _RescheduleDialog extends StatefulWidget {
+  const _RescheduleDialog();
+
+  @override
+  State<_RescheduleDialog> createState() => _RescheduleDialogState();
+}
+
+class _RescheduleDialogState extends State<_RescheduleDialog> {
+  final _reasonController = TextEditingController();
+  DateTime? _date;
+  String? _error;
+
+  @override
+  void dispose() {
+    _reasonController.dispose();
+    super.dispose();
+  }
+
+  String _apiDate(DateTime d) =>
+      '${d.year}-${d.month.toString().padLeft(2, '0')}-'
+      '${d.day.toString().padLeft(2, '0')}';
+
+  String _displayDate(DateTime d) =>
+      '${d.day.toString().padLeft(2, '0')}/'
+      '${d.month.toString().padLeft(2, '0')}/${d.year}';
+
+  Future<void> _pickDate() async {
+    final today = DateUtils.dateOnly(DateTime.now());
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _date ?? today.add(const Duration(days: 1)),
+      firstDate: today,
+      lastDate: today.add(const Duration(days: 60)),
+      helpText: 'Nueva fecha de entrega',
+      cancelText: 'Cancelar',
+      confirmText: 'Elegir',
+    );
+    if (picked != null) {
+      setState(() {
+        _date = picked;
+        _error = null;
+      });
+    }
+  }
+
+  void _submit() {
+    final reason = _reasonController.text.trim();
+    if (reason.isEmpty || _date == null) {
+      setState(
+        () =>
+            _error =
+                reason.isEmpty
+                    ? 'Escribe el motivo de la reprogramación.'
+                    : 'Elige la nueva fecha de entrega.',
+      );
+      return;
+    }
+    Navigator.pop(context, (reason: reason, date: _apiDate(_date!)));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Reprogramar pedido'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextField(
+            controller: _reasonController,
+            decoration: const InputDecoration(
+              labelText: 'Motivo',
+              hintText: 'Ej.: cliente no se encuentra',
+            ),
+            textCapitalization: TextCapitalization.sentences,
+            onChanged: (_) {
+              if (_error != null) setState(() => _error = null);
+            },
+          ),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: _pickDate,
+            icon: const Icon(Icons.calendar_month_outlined),
+            label: Text(
+              _date == null ? 'Elegir nueva fecha' : _displayDate(_date!),
+            ),
+          ),
+          if (_error != null) ...[
+            const SizedBox(height: 10),
+            Text(_error!, style: const TextStyle(color: AppTheme.danger)),
+          ],
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('Enviar')),
+      ],
+    );
+  }
+}
+
 class _OrderActions extends StatelessWidget {
   const _OrderActions({
     required this.order,
-    required this.processing,
+    required this.runningAction,
     required this.onReception,
     required this.onStartRoute,
     required this.onDeliver,
@@ -577,7 +937,7 @@ class _OrderActions extends StatelessWidget {
   });
 
   final DeliveryOrder order;
-  final bool processing;
+  final String? runningAction;
   final VoidCallback onReception;
   final VoidCallback onStartRoute;
   final VoidCallback onDeliver;
@@ -588,26 +948,39 @@ class _OrderActions extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDelivered = order.isDelivered;
     final isRoute = order.isInRoute;
+    final processing = runningAction != null;
+    // Un pedido ya recepcionado (o entregado) no vuelve a mostrar
+    // "Recepcionar"; en ruta el mismo botón pasa a ser "Entregar".
+    final showPrimary = isRoute || !order.isReceived;
 
     return Column(
       children: [
         Row(
           children: [
-            Expanded(
-              child: ElevatedButton.icon(
-                onPressed:
-                    processing || isDelivered
-                        ? null
-                        : (isRoute ? onDeliver : onReception),
-                icon: Icon(
-                  isRoute
-                      ? Icons.check_circle_outline
-                      : Icons.inventory_2_outlined,
+            if (showPrimary) ...[
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed:
+                      processing || isDelivered
+                          ? null
+                          : (isRoute ? onDeliver : onReception),
+                  icon:
+                      runningAction == 'primary'
+                          ? const _ButtonSpinner()
+                          : Icon(
+                            isRoute
+                                ? Icons.check_circle_outline
+                                : Icons.inventory_2_outlined,
+                          ),
+                  label: Text(
+                    runningAction == 'primary'
+                        ? (isRoute ? 'Entregando...' : 'Recepcionando...')
+                        : (isRoute ? 'Entregar' : 'Recepcionar'),
+                  ),
                 ),
-                label: Text(isRoute ? 'Entregar' : 'Recepcionar'),
               ),
-            ),
-            const SizedBox(width: 10),
+              const SizedBox(width: 10),
+            ],
             Expanded(
               child: OutlinedButton.icon(
                 onPressed: processing || isDelivered ? null : onReschedule,
@@ -627,8 +1000,13 @@ class _OrderActions extends StatelessWidget {
               child: OutlinedButton.icon(
                 onPressed:
                     processing || isRoute || isDelivered ? null : onStartRoute,
-                icon: const Icon(Icons.route_outlined),
-                label: const Text('Iniciar ruta'),
+                icon:
+                    runningAction == 'route'
+                        ? const _ButtonSpinner()
+                        : const Icon(Icons.route_outlined),
+                label: Text(
+                  runningAction == 'route' ? 'Iniciando...' : 'Iniciar ruta',
+                ),
                 style: OutlinedButton.styleFrom(
                   minimumSize: const Size.fromHeight(52),
                 ),
@@ -649,16 +1027,27 @@ class _OrderActions extends StatelessWidget {
   }
 }
 
+class _ButtonSpinner extends StatelessWidget {
+  const _ButtonSpinner();
+
+  @override
+  Widget build(BuildContext context) {
+    return const SizedBox(
+      width: 18,
+      height: 18,
+      child: CircularProgressIndicator(strokeWidth: 2.2),
+    );
+  }
+}
+
 class _Summary extends StatelessWidget {
   const _Summary({required this.orders});
   final List<DeliveryOrder> orders;
 
   @override
   Widget build(BuildContext context) {
-    final assigned =
-        orders.where((o) {
-          return !o.isInRoute && !o.isDelivered;
-        }).length;
+    final assigned = orders.where((o) => !o.isReceived).length;
+    final received = orders.where((o) => o.isRecepcionado).length;
     final route = orders.where((o) => o.isInRoute).length;
     final delivered = orders.where((o) => o.isDelivered).length;
     final amount = orders.fold<double>(
@@ -722,7 +1111,7 @@ class _Summary extends StatelessWidget {
                 ),
               ),
               Text(
-                '${orders.length}',
+                '${orders.length - delivered}',
                 style: const TextStyle(
                   fontSize: 28,
                   fontWeight: FontWeight.w900,
@@ -740,6 +1129,14 @@ class _Summary extends StatelessWidget {
                 label: 'Asignados',
                 value: assigned,
                 color: AppTheme.purpleLight,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: _Metric(
+                label: 'Recepcionados',
+                value: received,
+                color: AppTheme.info,
               ),
             ),
             const SizedBox(width: 10),
@@ -794,13 +1191,16 @@ class _Metric extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 2),
-          Text(
-            label,
-            maxLines: 1,
-            style: const TextStyle(
-              fontSize: 11,
-              color: AppTheme.textMuted,
-              fontWeight: FontWeight.w700,
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(
+              label,
+              maxLines: 1,
+              style: const TextStyle(
+                fontSize: 11,
+                color: AppTheme.textMuted,
+                fontWeight: FontWeight.w700,
+              ),
             ),
           ),
         ],
@@ -822,6 +1222,15 @@ class _Filters extends StatelessWidget {
           child: _FilterButton(
             label: 'Asignados',
             value: 'asignados',
+            selected: selected,
+            onSelected: onSelected,
+          ),
+        ),
+        const SizedBox(width: 9),
+        Expanded(
+          child: _FilterButton(
+            label: 'Recepcionados',
+            value: 'recepcionados',
             selected: selected,
             onSelected: onSelected,
           ),
@@ -882,13 +1291,20 @@ class _FilterButton extends StatelessWidget {
         child: InkWell(
           borderRadius: BorderRadius.circular(17),
           onTap: () => onSelected(value),
-          child: Center(
-            child: Text(
-              label,
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight: active ? FontWeight.w900 : FontWeight.w700,
-                color: active ? Colors.white : AppTheme.textMuted,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6),
+            child: Center(
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: active ? FontWeight.w900 : FontWeight.w700,
+                    color: active ? Colors.white : AppTheme.textMuted,
+                  ),
+                ),
               ),
             ),
           ),
@@ -968,9 +1384,10 @@ class _EmptyState extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final text = switch (filter) {
+      'recepcionados' => 'No tienes pedidos recepcionados',
       'ruta' => 'No tienes pedidos en ruta',
       'entregados' => 'Todavía no tienes pedidos entregados',
-      _ => 'No tienes pedidos asignados todavía',
+      _ => 'No tienes pedidos por recepcionar',
     };
     return Center(
       child: Padding(
@@ -1073,21 +1490,40 @@ class _SelectedPayment {
     this.yapeAlias,
     this.montoEfectivo,
     this.nroOperacion,
+    this.paymentProofPath,
+    this.evidencePaths,
   });
 
   final String? medioPago;
   final String? yapeAlias;
   final double? montoEfectivo;
   final String? nroOperacion;
+  final String? paymentProofPath;
+
+  /// Fotos 1 y 2 de la entrega cuando ya se tomaron en la pantalla de cobro
+  /// (pago mixto). Si es null, se toman con la cámara después del cobro.
+  final List<String>? evidencePaths;
+}
+
+/// Lo que el motorizado ya cargó en el cobro de un pedido. Sobrevive a cerrar
+/// la pantalla de cobro, para no perder las fotos si la entrega falla.
+class _DeliveryDraft {
+  final List<XFile?> photos = List<XFile?>.filled(3, null);
+  int? methodId;
+  bool isMixed = false;
+  String cashText = '';
+  String referenceText = '';
 }
 
 class _PaymentMethodSheet extends ConsumerStatefulWidget {
   const _PaymentMethodSheet({
     required this.order,
+    required this.draft,
     required this.scrollController,
   });
 
   final DeliveryOrder order;
+  final _DeliveryDraft draft;
   final ScrollController scrollController;
 
   @override
@@ -1100,8 +1536,25 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
   PaymentMethod? _selectedMethod;
   PaymentAccount? _selectedAccount;
   bool _isMixed = false;
-  final _referenceController = TextEditingController();
-  final _cashController = TextEditingController();
+  late final _referenceController = TextEditingController(
+    text: widget.draft.referenceText,
+  );
+  late final _cashController = TextEditingController(
+    text: widget.draft.cashText,
+  );
+
+  /// Foto 1 y Foto 2 (entrega) y Foto 3 (comprobante), en cualquier medio.
+  /// Es la lista del borrador: lo que se toma aquí queda guardado.
+  List<XFile?> get _photos => widget.draft.photos;
+
+  /// El comprobante (Foto 3) es obligatorio en pagos digitales y mixtos; en
+  /// efectivo o contra entrega no hay comprobante que fotografiar.
+  bool get _requiresProofPhoto => _isMixed || _supportsPaymentProof;
+
+  bool get _photosComplete =>
+      _photos[0] != null &&
+      _photos[1] != null &&
+      (!_requiresProofPhoto || _photos[2] != null);
 
   @override
   void initState() {
@@ -1111,6 +1564,11 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
 
   @override
   void dispose() {
+    widget.draft
+      ..referenceText = _referenceController.text
+      ..cashText = _cashController.text
+      ..methodId = _selectedMethod?.id
+      ..isMixed = _isMixed;
     _referenceController.dispose();
     _cashController.dispose();
     super.dispose();
@@ -1125,9 +1583,24 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
 
   bool get _requiresReference => _selectedMethod?.requiereReferencia ?? false;
 
-  double? get _cashAmount => double.tryParse(
-    _cashController.text.trim().replaceAll(',', '.'),
-  );
+  bool get _supportsPaymentProof {
+    if (_isMixed) return true;
+    final method = _selectedMethod;
+    if (method == null || _isCash) return false;
+    final value = '${method.codigo} ${method.nombre}'.toLowerCase();
+    return value.contains('qr') ||
+        value.contains('yape') ||
+        value.contains('plin') ||
+        value.contains('transfer') ||
+        value.contains('tarjeta');
+  }
+
+  /// En efectivo se cobra siempre el saldo completo (no editable); en pago
+  /// mixto el motorizado ingresa la parte pagada en efectivo.
+  double? get _cashAmount =>
+      _isCash && !_isMixed
+          ? widget.order.amountDue
+          : double.tryParse(_cashController.text.trim().replaceAll(',', '.'));
 
   double? get _digitalAmount {
     final cash = _cashAmount;
@@ -1137,15 +1610,16 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
 
   bool _isDigitalMethod(PaymentMethod method) {
     final value = '${method.codigo} ${method.nombre}'.toLowerCase();
-    return value.contains('yape') || value.contains('transferencia');
+    return value.contains('qr') ||
+        value.contains('yape') ||
+        value.contains('transferencia');
   }
 
   bool get _canContinue {
     final method = _selectedMethod;
     if (method == null) return false;
     if (method.cuentas.isNotEmpty && _selectedAccount == null) return false;
-    if (_requiresReference &&
-        _referenceController.text.trim().isEmpty) {
+    if (_requiresReference && _referenceController.text.trim().isEmpty) {
       return false;
     }
     if (_isMixed) {
@@ -1154,7 +1628,7 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
         return false;
       }
     }
-    return true;
+    return _photosComplete;
   }
 
   void _confirm() {
@@ -1163,15 +1637,79 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
     Navigator.pop(
       context,
       _SelectedPayment(
-        medioPago: method.codigo.isNotEmpty ? method.codigo : method.nombre,
+        // La opción "QR" se registra con el medio real del QR elegido.
+        medioPago:
+            method.id == ApiService.qrMethodId
+                ? (_selectedAccount?.paymentCode ?? 'QR')
+                : (method.codigo.isNotEmpty ? method.codigo : method.nombre),
         yapeAlias: _selectedAccount?.alias,
         montoEfectivo: cashAmount,
         nroOperacion:
-            _requiresReference
-                ? _referenceController.text.trim()
-                : null,
+            _requiresReference ? _referenceController.text.trim() : null,
+        paymentProofPath: _photos[2]?.path,
+        evidencePaths: [_photos[0]!.path, _photos[1]!.path],
       ),
     );
+  }
+
+  Future<void> _pickPhoto(int index) async {
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      showDragHandle: true,
+      backgroundColor: AppTheme.surface,
+      builder:
+          (context) => SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Foto ${index + 1}',
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.camera_alt_outlined),
+                  title: const Text('Tomar foto'),
+                  onTap: () => Navigator.pop(context, ImageSource.camera),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.add_photo_alternate_outlined),
+                  title: const Text('Elegir de la galería'),
+                  onTap: () => Navigator.pop(context, ImageSource.gallery),
+                ),
+              ],
+            ),
+          ),
+    );
+    if (source == null) return;
+    final image = await ImagePicker().pickImage(
+      source: source,
+      imageQuality: 78,
+      maxWidth: 1600,
+    );
+    if (image != null && mounted) {
+      setState(() => _photos[index] = image);
+    }
+  }
+
+  bool _draftRestored = false;
+
+  /// Al reintentar una entrega, vuelve a marcar el medio elegido la vez
+  /// anterior (las fotos y los montos ya vienen del borrador).
+  void _restoreDraftMethod(List<PaymentMethod> methods) {
+    if (_draftRestored) return;
+    _draftRestored = true;
+    final id = widget.draft.methodId;
+    if (id == null || _selectedMethod != null) return;
+    for (final m in methods) {
+      if (m.id != id) continue;
+      _selectedMethod = m;
+      _isMixed = widget.draft.isMixed;
+      _selectedAccount = m.cuentas.isEmpty ? null : m.cuentas.first;
+      return;
+    }
   }
 
   void _skip() => Navigator.pop(context, const _SelectedPayment());
@@ -1239,6 +1777,7 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
   }
 
   Widget _buildContent(BuildContext context, List<PaymentMethod> methods) {
+    _restoreDraftMethod(methods);
     final method = _selectedMethod;
     final mixedMethods = methods.where(_isDigitalMethod).toList();
     return Column(
@@ -1271,14 +1810,16 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
               if (mixedMethods.isNotEmpty)
                 _MixedPaymentTile(
                   selected: _isMixed,
-                  onTap: () => setState(() {
-                    _isMixed = true;
-                    _selectedMethod = mixedMethods.first;
-                    _selectedAccount = mixedMethods.first.cuentas.length == 1
-                        ? mixedMethods.first.cuentas.first
-                        : null;
-                    _referenceController.clear();
-                  }),
+                  onTap:
+                      () => setState(() {
+                        _isMixed = true;
+                        _selectedMethod = mixedMethods.first;
+                        _selectedAccount =
+                            mixedMethods.first.cuentas.isEmpty
+                                ? null
+                                : mixedMethods.first.cuentas.first;
+                        _referenceController.clear();
+                      }),
                 ),
               ...methods.map(
                 (m) => _MethodTile(
@@ -1289,7 +1830,7 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
                         _selectedMethod = m;
                         _isMixed = false;
                         _selectedAccount =
-                            m.cuentas.length == 1 ? m.cuentas.first : null;
+                            m.cuentas.isEmpty ? null : m.cuentas.first;
                         _referenceController.clear();
                         _cashController.clear();
                       }),
@@ -1305,15 +1846,24 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
                 Wrap(
                   spacing: 8,
                   runSpacing: 8,
-                  children: mixedMethods.map((m) => ChoiceChip(
-                    label: Text(m.nombre),
-                    selected: method?.id == m.id,
-                    onSelected: (_) => setState(() {
-                      _selectedMethod = m;
-                      _selectedAccount = m.cuentas.length == 1 ? m.cuentas.first : null;
-                      _referenceController.clear();
-                    }),
-                  )).toList(),
+                  children:
+                      mixedMethods
+                          .map(
+                            (m) => ChoiceChip(
+                              label: Text(m.nombre),
+                              selected: method?.id == m.id,
+                              onSelected:
+                                  (_) => setState(() {
+                                    _selectedMethod = m;
+                                    _selectedAccount =
+                                        m.cuentas.isEmpty
+                                            ? null
+                                            : m.cuentas.first;
+                                    _referenceController.clear();
+                                  }),
+                            ),
+                          )
+                          .toList(),
                 ),
               ],
               if (method != null && method.cuentas.length > 1) ...[
@@ -1351,41 +1901,106 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
                   controller: _referenceController,
                   onChanged: (_) => setState(() {}),
                   decoration: const InputDecoration(
-                    labelText: 'Número de operación',
+                    labelText: 'Número de operación *',
                     hintText: 'Ej. 000123456',
                   ),
                 ),
               ],
               if (method != null && (_isCash || _isMixed)) ...[
                 const SizedBox(height: 16),
-                TextField(
-                  controller: _cashController,
-                  onChanged: (_) => setState(() {}),
-                  keyboardType: const TextInputType.numberWithOptions(
-                    decimal: true,
+                if (_isMixed)
+                  TextField(
+                    controller: _cashController,
+                    onChanged: (_) => setState(() {}),
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
+                    decoration: InputDecoration(
+                      labelText: 'Monto pagado en efectivo *',
+                      hintText: 'Obligatorio',
+                      prefixText: 'S/ ',
+                      helperText:
+                          'Menor que el saldo de '
+                          '${peruvianCurrency.format(widget.order.amountDue)}',
+                    ),
+                  )
+                else
+                  TextFormField(
+                    key: const ValueKey('cash-full-amount'),
+                    initialValue: peruvianCurrency.format(
+                      widget.order.amountDue,
+                    ),
+                    readOnly: true,
+                    enableInteractiveSelection: false,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w900,
+                      color: AppTheme.success,
+                    ),
+                    decoration: const InputDecoration(
+                      labelText: 'Monto a cobrar en efectivo',
+                      helperText: 'Se cobra el saldo completo del pedido.',
+                      suffixIcon: Icon(Icons.lock_outline),
+                    ),
                   ),
-                  decoration: InputDecoration(
-                    labelText: _isMixed
-                        ? 'Monto pagado en efectivo'
-                        : 'Monto cobrado (opcional)',
-                    hintText: widget.order.amountDue.toStringAsFixed(2),
-                  ),
-                ),
                 if (_isMixed) ...[
                   const SizedBox(height: 8),
                   Text(
                     _digitalAmount == null
                         ? 'Ingresa el efectivo para calcular el pago digital.'
                         : _digitalAmount! <= 0
-                            ? 'El efectivo debe ser menor que el saldo total.'
-                            : 'Pago digital restante: ${peruvianCurrency.format(_digitalAmount!)}',
+                        ? 'El efectivo debe ser menor que el saldo total.'
+                        : 'Pago digital restante: ${peruvianCurrency.format(_digitalAmount!)}',
                     style: TextStyle(
-                      color: _digitalAmount != null && _digitalAmount! > 0
-                          ? AppTheme.textMuted
-                          : AppTheme.warning,
+                      color:
+                          _digitalAmount != null && _digitalAmount! > 0
+                              ? AppTheme.textMuted
+                              : AppTheme.warning,
                     ),
                   ),
                 ],
+              ],
+              if (method != null) ...[
+                const SizedBox(height: 16),
+                const Text(
+                  'Fotos de evidencia',
+                  style: TextStyle(fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  _requiresProofPhoto
+                      ? 'Obligatorias: dos de la entrega y una del '
+                          'comprobante del pago.'
+                      : 'Obligatorias las dos de la entrega. La tercera es '
+                          'opcional.',
+                  style: TextStyle(
+                    color:
+                        _photosComplete ? AppTheme.textMuted : AppTheme.warning,
+                    fontSize: 12,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    for (var i = 0; i < 3; i++) ...[
+                      if (i > 0) const SizedBox(width: 10),
+                      Expanded(
+                        child: _EvidenceSlot(
+                          label: 'Foto ${i + 1}',
+                          caption:
+                              i < 2
+                                  ? 'Entrega'
+                                  : (_requiresProofPhoto
+                                      ? 'Comprobante'
+                                      : 'Opcional'),
+                          required: i < 2 || _requiresProofPhoto,
+                          photo: _photos[i],
+                          onPick: () => _pickPhoto(i),
+                          onRemove: () => setState(() => _photos[i] = null),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
               ],
             ],
           ),
@@ -1394,24 +2009,24 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
           color: AppTheme.surface,
           padding: const EdgeInsets.only(top: 8),
           child: Padding(
-          padding: const EdgeInsets.fromLTRB(22, 8, 22, 22),
-          child: Row(
-            children: [
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('Cancelar'),
+            padding: const EdgeInsets.fromLTRB(22, 8, 22, 22),
+            child: Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Cancelar'),
+                  ),
                 ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: FilledButton(
-                  onPressed: _canContinue ? _confirm : null,
-                  child: const Text('Continuar'),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: FilledButton(
+                    onPressed: _canContinue ? _confirm : null,
+                    child: const Text('Continuar'),
+                  ),
                 ),
-              ),
-            ],
-          ),
+              ],
+            ),
           ),
         ),
       ],
@@ -1436,7 +2051,9 @@ class _MethodTile extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 10),
       decoration: BoxDecoration(
         color:
-            selected ? AppTheme.purple.withValues(alpha: .22) : AppTheme.surface2,
+            selected
+                ? AppTheme.purple.withValues(alpha: .22)
+                : AppTheme.surface2,
         borderRadius: BorderRadius.circular(18),
         border: Border.all(
           color: selected ? AppTheme.purpleLight : Colors.transparent,
@@ -1493,7 +2110,10 @@ class _MixedPaymentTile extends StatelessWidget {
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       decoration: BoxDecoration(
-        color: selected ? AppTheme.purple.withValues(alpha: .22) : AppTheme.surface2,
+        color:
+            selected
+                ? AppTheme.purple.withValues(alpha: .22)
+                : AppTheme.surface2,
         borderRadius: BorderRadius.circular(18),
         border: Border.all(
           color: selected ? AppTheme.purpleLight : Colors.transparent,
@@ -1516,9 +2136,12 @@ class _MixedPaymentTile extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('Pago mixto', style: TextStyle(fontWeight: FontWeight.w800)),
                     Text(
-                      'Efectivo + Yape o transferencia',
+                      'Pago mixto',
+                      style: TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                    Text(
+                      'Efectivo + QR o transferencia',
                       style: TextStyle(color: AppTheme.textMuted, fontSize: 12),
                     ),
                   ],
@@ -1624,14 +2247,6 @@ class _AccountCard extends StatelessWidget {
                     fontSize: 12,
                   ),
                 ),
-                if (imageUrl != null) ...[
-                  const SizedBox(height: 4),
-                  // ignore: avoid_print
-                  Text(
-                    'DEBUG: $imageUrl',
-                    style: const TextStyle(color: Colors.orange, fontSize: 9),
-                  ),
-                ],
               ],
             ),
           ),

@@ -43,6 +43,17 @@ class DeliveryOrder {
         value.contains('complet');
   }
 
+  /// Ya pasó por la recepción (recepcionado, en ruta o entregado): no debe
+  /// recepcionarse otra vez.
+  /// Recepcionado y todavía sin salir a ruta: sección "Recepcionados".
+  bool get isRecepcionado =>
+      status.toLowerCase().contains('recepcionad') &&
+      !isInRoute &&
+      !isDelivered;
+
+  bool get isReceived =>
+      status.toLowerCase().contains('recepcionad') || isInRoute || isDelivered;
+
   bool get isInRoute {
     final value = status.toLowerCase();
     return value.contains('ruta') || value.contains('recibido');

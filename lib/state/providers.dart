@@ -148,6 +148,10 @@ final homeTabIndexProvider = StateProvider<int>((ref) => 0);
 
 final focusedOrderIdProvider = StateProvider<int?>((ref) => null);
 
+/// Pedido que el mapa pidió entregar: la pantalla de Pedidos lo abre y arranca
+/// el cobro (ahí vive el flujo de fotos y medio de pago).
+final deliverOrderRequestProvider = StateProvider<int?>((ref) => null);
+
 final _locationTrackingServiceProvider = Provider<LocationTrackingService>((
   ref,
 ) {

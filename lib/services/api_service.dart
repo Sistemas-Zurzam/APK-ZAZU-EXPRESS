@@ -17,8 +17,11 @@ class ApiService {
     : _dio = Dio(
         BaseOptions(
           baseUrl: AppConfig.baseUrl,
-          connectTimeout: const Duration(seconds: 15),
-          receiveTimeout: const Duration(seconds: 20),
+          // El servidor a veces tarda más de 15 s solo en la conexión HTTPS
+          // (TLS); con límites más cortos el login y la recepción fallaban
+          // aunque el servidor sí terminara respondiendo.
+          connectTimeout: const Duration(seconds: 40),
+          receiveTimeout: const Duration(seconds: 45),
           headers: {'Accept': 'application/json'},
         ),
       ) {
@@ -100,9 +103,32 @@ class ApiService {
     );
   }
 
+  /// El backend rechaza la recepción de un pedido que ya fue recepcionado
+  /// (p. ej. si la lista local aún no se había actualizado).
+  static bool isAlreadyReceivedError(Object error) {
+    if (error is! DioException) return false;
+    final data = error.response?.data;
+    final message =
+        (data is Map ? data['message'] ?? data['error'] : data)
+            ?.toString()
+            .toLowerCase() ??
+        '';
+    // "Ya fue recepcionado" o, como responde /motorizado/recepcionar, "El
+    // pedido debe estar en estado Asignado (estado actual: Recepcionado)".
+    final actual = message.split('estado actual').last;
+    return (message.contains('ya') &&
+            (message.contains('recepcion') || message.contains('recibid'))) ||
+        (message.contains('estado actual') &&
+            (actual.contains('recepcion') ||
+                actual.contains('ruta') ||
+                actual.contains('entreg')));
+  }
+
   Future<void> startRoute(int orderId, {int? operationId}) async {
-    await _postFirstAvailable(
-      ['/apk/pedidos/asignar', '/motorizado/iniciar-ruta'],
+    // Directo al endpoint real: probar antes una ruta inexistente costaba
+    // una petición extra (y el servidor es lento en cada una).
+    await _dio.post(
+      '/motorizado/iniciar-ruta',
       data: {
         'pedido_id': orderId,
         if (operationId != null) 'operacion_id': operationId,
@@ -112,9 +138,73 @@ class ApiService {
 
   Future<List<PaymentMethod>> getPaymentMethods(int orderId) async {
     final response = await _dio.get('/motorizado/pedidos/$orderId/medios-pago');
-    final list = _extractList(response.data, ['medios_pago']);
-    return list.map((e) => PaymentMethod.fromJson(_asMap(e))).toList();
+    final list = _extractList(response.data, [
+      'medios_pago',
+      'metodos_pago',
+      'payment_methods',
+    ]);
+    final methods = list.map((e) => PaymentMethod.fromJson(_asMap(e))).toList();
+
+    // Todos los QR activos de la vista Courier (cualquier empresa). El rol
+    // motorizado no tiene acceso a /qrs, por eso vienen en esta respuesta.
+    // Si el backend aún no envía `qrs`, se usan las cuentas de cada medio.
+    final data = response.data;
+    final rawQrs = data is Map ? data['qrs'] : null;
+    final qrs =
+        rawQrs is List
+            ? rawQrs.map((e) => PaymentAccount.fromJson(_asMap(e))).toList()
+            : [for (final m in methods) ...m.cuentas];
+    return buildPaymentOptions(methods, qrs);
   }
+
+  static bool _isWalletMethod(PaymentMethod method) {
+    final text = '${method.codigo} ${method.nombre}'.toLowerCase();
+    return text.contains('yape') || text.contains('plin');
+  }
+
+  /// Yape y Plin se reemplazan por una sola opción "QR" con todos los QR
+  /// activos (sin repetir y sin los desactivados en ZAZU). Transferencia
+  /// suma también las cuentas bancarias de esa lista.
+  static List<PaymentMethod> buildPaymentOptions(
+    List<PaymentMethod> methods,
+    List<PaymentAccount> qrs,
+  ) {
+    final activeQrs =
+        <int, PaymentAccount>{
+          for (final qr in qrs)
+            if (qr.activo) qr.id: qr,
+        }.values.toList();
+    final bankAccounts = activeQrs.where(
+      (qr) => qr.paymentCode == 'TRANSFERENCIA',
+    );
+
+    final options = <PaymentMethod>[];
+    for (final method in methods) {
+      if (_isWalletMethod(method)) continue;
+      final accounts = <int, PaymentAccount>{
+        for (final a in method.cuentas)
+          if (a.activo) a.id: a,
+        if (method.codigo.toUpperCase() == 'TRANSFERENCIA')
+          for (final a in bankAccounts) a.id: a,
+      };
+      options.add(method.copyWith(cuentas: accounts.values.toList()));
+    }
+    if (activeQrs.isNotEmpty) {
+      options.add(
+        PaymentMethod(
+          id: qrMethodId,
+          codigo: 'QR',
+          nombre: 'QR',
+          requiereReferencia: false,
+          cuentas: activeQrs,
+        ),
+      );
+    }
+    return options;
+  }
+
+  /// Id local de la opción "QR" (no existe en el catálogo del backend).
+  static const qrMethodId = -1;
 
   Future<void> confirmDelivery(
     int orderId, {
@@ -124,6 +214,7 @@ class ApiService {
     String? yapeAlias,
     double? montoEfectivo,
     String? nroOperacion,
+    String? paymentProofPath,
   }) async {
     if (evidencePaths.length != 2) {
       throw ArgumentError.value(
@@ -137,8 +228,15 @@ class ApiService {
     final secondPath = evidencePaths[1];
     final firstName = firstPath.split(RegExp(r'[\\/]')).last;
     final secondName = secondPath.split(RegExp(r'[\\/]')).last;
+    final paymentProofName = paymentProofPath?.split(RegExp(r'[\\/]')).last;
     await _postFirstAvailable(
-      ['/apk/confirmar-entrega', '/motorizado/entregar'],
+      ['/motorizado/entregar', '/apk/confirmar-entrega'],
+      // Subir 3 fotos por datos móviles, con un servidor lento, supera con
+      // facilidad los 45 s generales: la entrega fallaba a medio envío.
+      options: Options(
+        sendTimeout: const Duration(seconds: 120),
+        receiveTimeout: const Duration(seconds: 120),
+      ),
       dataBuilder:
           () => FormData.fromMap({
             'pedido_id': orderId,
@@ -157,6 +255,13 @@ class ApiService {
             if (montoEfectivo != null) 'monto_efectivo': montoEfectivo,
             if (nroOperacion != null && nroOperacion.isNotEmpty)
               'nro_operacion': nroOperacion,
+            // El comprobante del pago digital es la tercera evidencia: el
+            // backend solo guarda foto, foto_2 y foto_3.
+            if (paymentProofPath != null && paymentProofPath.isNotEmpty)
+              'foto_3': MultipartFile.fromFileSync(
+                paymentProofPath,
+                filename: paymentProofName,
+              ),
           }),
     );
   }
@@ -164,11 +269,17 @@ class ApiService {
   Future<void> rescheduleOrder(
     int orderId,
     String reason,
-    String newDate,
-  ) async {
+    String newDate, {
+    int? operationId,
+  }) async {
     await _dio.post(
       '/motorizado/reprogramar',
-      data: {'pedido_id': orderId, 'motivo': reason, 'nueva_fecha': newDate},
+      data: {
+        'pedido_id': orderId,
+        if (operationId != null) 'operacion_id': operationId,
+        'motivo': reason,
+        'nueva_fecha': newDate,
+      },
     );
   }
 
@@ -216,11 +327,16 @@ class ApiService {
     List<String> paths, {
     dynamic data,
     dynamic Function()? dataBuilder,
+    Options? options,
   }) async {
     DioException? lastNotFound;
     for (final path in paths) {
       try {
-        return await _dio.post(path, data: dataBuilder?.call() ?? data);
+        return await _dio.post(
+          path,
+          data: dataBuilder?.call() ?? data,
+          options: options,
+        );
       } on DioException catch (error) {
         if (error.response?.statusCode == 404 && path != paths.last) {
           lastNotFound = error;

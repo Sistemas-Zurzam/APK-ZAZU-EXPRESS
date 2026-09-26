@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:ui' as ui;
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -9,8 +10,10 @@ import '../core/google_polyline.dart';
 import '../core/app_theme.dart';
 import '../core/currency_format.dart';
 import '../core/external_navigation.dart';
+import '../core/route_rules.dart';
 import '../models/order.dart';
 import '../state/providers.dart';
+import '../widgets/order_contact_sheet.dart';
 
 class MapScreen extends ConsumerStatefulWidget {
   const MapScreen({super.key});
@@ -90,7 +93,12 @@ class _MapScreenState extends ConsumerState<MapScreen> {
 
     try {
       final orders = await ref.read(apiProvider).getMyOrders();
-      routeOrders = orders.where((order) => order.hasCoordinates).toList();
+      // Los entregados salen del mapa: ya no son paradas de la ruta (el
+      // trazado de /motorizado/mi-ruta tampoco los incluye).
+      routeOrders =
+          orders
+              .where((order) => order.hasCoordinates && !order.isDelivered)
+              .toList();
       routeOrders.sort(
         (left, right) => (left.deliverySequence ?? 1 << 30).compareTo(
           right.deliverySequence ?? 1 << 30,
@@ -128,6 +136,14 @@ class _MapScreenState extends ConsumerState<MapScreen> {
     }
   }
 
+  /// Paradas vigentes (id + estado): si cambia, el mapa está desactualizado.
+  static String _activeStopsKey(List<DeliveryOrder> orders) => (orders
+          .where((o) => o.hasCoordinates && !o.isDelivered)
+          .map((o) => '${o.id}:${o.status}')
+          .toList()
+        ..sort())
+      .join(',');
+
   void _focusOnOrder(int? orderId) {
     if (orderId == null) return;
     final index = routeOrders.indexWhere((order) => order.id == orderId);
@@ -151,6 +167,47 @@ class _MapScreenState extends ConsumerState<MapScreen> {
 
   Future<void> _openTurnByTurnNavigation(DeliveryOrder order) async {
     await openExternalNavigation(context, order);
+  }
+
+  Future<void> _showOrderSheet(DeliveryOrder order, int sequence) =>
+      showOrderContactSheet(
+        context,
+        order,
+        sequence: sequence,
+        onNavigate: () => _openTurnByTurnNavigation(order),
+        onStartRoute: () => _startRoute(order),
+        onDeliver: () {
+          ref.read(deliverOrderRequestProvider.notifier).state = order.id;
+          ref.read(homeTabIndexProvider.notifier).state = 0;
+        },
+      );
+
+  /// Inicia la ruta del pedido. Devuelve null si salió bien o el mensaje de
+  /// error. Al refrescar los pedidos, el listener recarga el mapa.
+  Future<String?> _startRoute(DeliveryOrder order) async {
+    final blocked = startRouteBlockReason(
+      order,
+      ref.read(ordersProvider).valueOrNull ?? routeOrders,
+    );
+    if (blocked != null) return blocked;
+    try {
+      await ref
+          .read(apiProvider)
+          .startRoute(order.id, operationId: order.operationId);
+      ref.invalidate(ordersProvider);
+      return null;
+    } on DioException catch (error) {
+      final data = error.response?.data;
+      final message = data is Map ? data['message']?.toString() : null;
+      if (message != null && message.trim().isNotEmpty) return message;
+      if (error.response?.statusCode != null) {
+        return 'No se pudo iniciar la ruta (error '
+            '${error.response!.statusCode}).';
+      }
+      return 'No se pudo conectar con el servidor. Revisa tu conexión.';
+    } catch (_) {
+      return 'No se pudo iniciar la ruta.';
+    }
   }
 
   LatLng get _origin {
@@ -247,6 +304,20 @@ class _MapScreenState extends ConsumerState<MapScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Al entregar (o recepcionar, reprogramar...) se invalida ordersProvider:
+    // se recarga el mapa para que las paradas y el trazado se actualicen.
+    ref.listen<AsyncValue<List<DeliveryOrder>>>(ordersProvider, (
+      previous,
+      next,
+    ) {
+      final before = previous?.valueOrNull;
+      final after = next.valueOrNull;
+      if (before == null || after == null || loading) return;
+      if (_activeStopsKey(before) != _activeStopsKey(after)) {
+        unawaited(_load());
+      }
+    });
+
     ref.listen<int?>(focusedOrderIdProvider, (previous, next) {
       if (next != null) _focusOnOrder(next);
     });
@@ -278,11 +349,12 @@ class _MapScreenState extends ConsumerState<MapScreen> {
           icon:
               numberedIcons[sequence] ??
               BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueViolet),
+          onTap: () => _showOrderSheet(order, sequence),
           infoWindow: InfoWindow(
             title: '$sequence. ${order.externalRef}',
             snippet:
                 '${order.customerName} · ${peruvianCurrency.format(order.amountDue)}',
-            onTap: () => _openTurnByTurnNavigation(order),
+            onTap: () => _showOrderSheet(order, sequence),
           ),
         ),
       );

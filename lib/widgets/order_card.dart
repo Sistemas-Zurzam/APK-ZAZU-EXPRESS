@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
 import '../core/app_theme.dart';
+import '../core/contact_actions.dart';
 import '../core/currency_format.dart';
 import '../models/order.dart';
 
@@ -162,7 +162,7 @@ class OrderCard extends StatelessWidget {
                   _ActionIcon(
                     icon: Icons.phone_outlined,
                     enabled: (order.phone ?? '').isNotEmpty,
-                    onPressed: () => _call(order.phone),
+                    onPressed: () => callCustomer(context, order.phone),
                   ),
                   const SizedBox(width: 8),
                   _ActionIcon(
@@ -175,7 +175,13 @@ class OrderCard extends StatelessWidget {
                     onPressed:
                         (order.phone ?? '').trim().isEmpty
                             ? null
-                            : () => _openWhatsApp(context, order),
+                            : () => openWhatsAppChat(
+                              context,
+                              order,
+                              text:
+                                  'Hola, le escribo respecto a su pedido '
+                                  '${sellerName(order.externalRef)}.',
+                            ),
                     icon: const Icon(Icons.chat_outlined, size: 18),
                     label: const Text('WhatsApp'),
                     style: FilledButton.styleFrom(
@@ -196,50 +202,6 @@ class OrderCard extends StatelessWidget {
     );
   }
 
-  Future<void> _call(String? phone) async {
-    if (phone == null || phone.trim().isEmpty) return;
-    final uri = Uri(scheme: 'tel', path: phone.trim());
-    if (await canLaunchUrl(uri)) await launchUrl(uri);
-  }
-
-  Future<void> _openWhatsApp(BuildContext context, DeliveryOrder order) async {
-    final phone = _whatsAppPhone(order.phone);
-    if (phone == null) return;
-    final seller = _sellerName(order.externalRef);
-
-    final uri = Uri.https('wa.me', '/$phone', {
-      'text': 'Hola, le escribo respecto a su pedido $seller.',
-    });
-
-    try {
-      final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
-      if (opened) return;
-    } catch (_) {
-      // Se informa el problema debajo si no existe una aplicación compatible.
-    }
-
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('No se pudo abrir WhatsApp para este número.'),
-        ),
-      );
-    }
-  }
-
-  String? _whatsAppPhone(String? rawPhone) {
-    if (rawPhone == null) return null;
-    var digits = rawPhone.replaceAll(RegExp(r'\D'), '');
-    if (digits.startsWith('00')) digits = digits.substring(2);
-    if (digits.length == 9) digits = '51$digits';
-    return digits.length >= 11 ? digits : null;
-  }
-
-  String _sellerName(String reference) {
-    final seller = reference.split('/').first.trim();
-    return seller.isEmpty ? 'ZAZU' : seller;
-  }
-
   _StatusStyle _statusStyle(String raw) {
     final value = raw.toLowerCase().replaceAll('_', ' ');
     if (value.contains('entreg') ||
@@ -249,6 +211,9 @@ class OrderCard extends StatelessWidget {
     }
     if (value.contains('ruta') || value.contains('recibido'))
       return const _StatusStyle('En ruta', AppTheme.warning);
+    if (value.contains('recepcion')) {
+      return const _StatusStyle('Recepcionado', AppTheme.info);
+    }
     if (value.contains('cancel') || value.contains('fall'))
       return const _StatusStyle('Incidencia', AppTheme.danger);
     return const _StatusStyle('Asignado', AppTheme.purpleLight);
