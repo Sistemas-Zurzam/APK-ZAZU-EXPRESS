@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
@@ -9,10 +10,12 @@ import '../core/currency_format.dart';
 import '../core/external_navigation.dart';
 import '../core/media_url.dart';
 import '../core/route_rules.dart';
+import '../models/ligo_qr.dart';
 import '../models/order.dart';
 import '../models/payment_method.dart';
 import '../services/api_service.dart';
 import '../state/providers.dart';
+import '../widgets/ligo_qr_panel.dart';
 import '../widgets/order_card.dart';
 import '../widgets/packing_order_sheet.dart';
 
@@ -1543,6 +1546,16 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
     text: widget.draft.cashText,
   );
 
+  /// Cobro con Ligo Pay: el QR lo genera el backend y el pago lo confirma el
+  /// webhook de Ligo; aquí solo se consulta el estado mientras se espera.
+  LigoQr? _ligo;
+  bool _ligoLoading = false;
+  String? _ligoError;
+  Timer? _ligoPolling;
+  bool _ligoRefreshing = false;
+
+  bool get _isLigo => _selectedMethod?.id == ApiService.ligoMethodId;
+
   /// Foto 1 y Foto 2 (entrega) y Foto 3 (comprobante), en cualquier medio.
   /// Es la lista del borrador: lo que se toma aquí queda guardado.
   List<XFile?> get _photos => widget.draft.photos;
@@ -1569,9 +1582,92 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
       ..cashText = _cashController.text
       ..methodId = _selectedMethod?.id
       ..isMixed = _isMixed;
+    _stopLigoPolling();
     _referenceController.dispose();
     _cashController.dispose();
     super.dispose();
+  }
+
+  /// Pide el QR (o el que ya existe: el del tracking también sirve) y empieza
+  /// a esperar el pago.
+  Future<void> _startLigo() async {
+    _stopLigoPolling();
+    setState(() {
+      _ligoLoading = true;
+      _ligoError = null;
+    });
+    try {
+      final qr = await ref.read(apiProvider).createLigoQr(widget.order.id);
+      if (!mounted || !_isLigo) return;
+      setState(() {
+        _ligo = qr;
+        _ligoLoading = false;
+      });
+      if (qr.isActive) {
+        // El cliente está frente al motorizado: cada 5 s basta para que la
+        // confirmación aparezca apenas pague, sin cargar al servidor.
+        _ligoPolling = Timer.periodic(
+          const Duration(seconds: 5),
+          (_) => _refreshLigo(),
+        );
+      }
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _ligoLoading = false;
+        _ligoError = _ligoErrorText(error);
+      });
+    }
+  }
+
+  Future<void> _refreshLigo() async {
+    if (_ligoRefreshing) return;
+    _ligoRefreshing = true;
+    try {
+      final qr = await ref.read(apiProvider).getLigoQr(widget.order.id);
+      if (!mounted || !_isLigo) return;
+      setState(() {
+        _ligo = qr;
+        _ligoError = null;
+      });
+      if (!qr.isActive) _stopLigoPolling();
+    } catch (_) {
+      // Sin señal un momento: se vuelve a consultar en el siguiente ciclo.
+    } finally {
+      _ligoRefreshing = false;
+    }
+  }
+
+  void _stopLigoPolling() {
+    _ligoPolling?.cancel();
+    _ligoPolling = null;
+  }
+
+  static String _ligoErrorText(Object error) {
+    if (error is DioException) {
+      final data = error.response?.data;
+      final message = data is Map ? data['message']?.toString().trim() : null;
+      if (message != null && message.isNotEmpty) return message;
+      if (error.response == null) {
+        return 'No se pudo conectar con el servidor. Revisa tu conexión.';
+      }
+    }
+    return 'No se pudo generar el QR de Ligo Pay.';
+  }
+
+  void _selectMethod(PaymentMethod m) {
+    setState(() {
+      _selectedMethod = m;
+      _isMixed = false;
+      _selectedAccount = m.cuentas.isEmpty ? null : m.cuentas.first;
+      _referenceController.clear();
+      _cashController.clear();
+    });
+    if (m.id == ApiService.ligoMethodId) {
+      _startLigo();
+    } else {
+      _stopLigoPolling();
+    }
   }
 
   bool get _isCash {
@@ -1586,7 +1682,8 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
   bool get _supportsPaymentProof {
     if (_isMixed) return true;
     final method = _selectedMethod;
-    if (method == null || _isCash) return false;
+    // Ligo Pay lo confirma su webhook: no hay captura que pedir.
+    if (method == null || _isCash || _isLigo) return false;
     final value = '${method.codigo} ${method.nombre}'.toLowerCase();
     return value.contains('qr') ||
         value.contains('yape') ||
@@ -1609,6 +1706,8 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
   }
 
   bool _isDigitalMethod(PaymentMethod method) {
+    // El QR de Ligo cobra el saldo completo, no la parte digital de un mixto.
+    if (method.id == ApiService.ligoMethodId) return false;
     final value = '${method.codigo} ${method.nombre}'.toLowerCase();
     return value.contains('qr') ||
         value.contains('yape') ||
@@ -1618,6 +1717,7 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
   bool get _canContinue {
     final method = _selectedMethod;
     if (method == null) return false;
+    if (_isLigo) return (_ligo?.isPaid ?? false) && _photosComplete;
     if (method.cuentas.isNotEmpty && _selectedAccount == null) return false;
     if (_requiresReference && _referenceController.text.trim().isEmpty) {
       return false;
@@ -1645,7 +1745,11 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
         yapeAlias: _selectedAccount?.alias,
         montoEfectivo: cashAmount,
         nroOperacion:
-            _requiresReference ? _referenceController.text.trim() : null,
+            _isLigo
+                ? _ligo?.instructionId
+                : (_requiresReference
+                    ? _referenceController.text.trim()
+                    : null),
         paymentProofPath: _photos[2]?.path,
         evidencePaths: [_photos[0]!.path, _photos[1]!.path],
       ),
@@ -1708,6 +1812,13 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
       _selectedMethod = m;
       _isMixed = widget.draft.isMixed;
       _selectedAccount = m.cuentas.isEmpty ? null : m.cuentas.first;
+      // Al reintentar con Ligo se vuelve a consultar el cobro: puede haberse
+      // pagado mientras la pantalla estaba cerrada.
+      if (_isLigo) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && _isLigo) _startLigo();
+        });
+      }
       return;
     }
   }
@@ -1810,32 +1921,41 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
               if (mixedMethods.isNotEmpty)
                 _MixedPaymentTile(
                   selected: _isMixed,
-                  onTap:
-                      () => setState(() {
-                        _isMixed = true;
-                        _selectedMethod = mixedMethods.first;
-                        _selectedAccount =
-                            mixedMethods.first.cuentas.isEmpty
-                                ? null
-                                : mixedMethods.first.cuentas.first;
-                        _referenceController.clear();
-                      }),
+                  onTap: () {
+                    _stopLigoPolling();
+                    setState(() {
+                      _isMixed = true;
+                      _selectedMethod = mixedMethods.first;
+                      _selectedAccount =
+                          mixedMethods.first.cuentas.isEmpty
+                              ? null
+                              : mixedMethods.first.cuentas.first;
+                      _referenceController.clear();
+                    });
+                  },
                 ),
               ...methods.map(
                 (m) => _MethodTile(
                   method: m,
                   selected: method?.id == m.id,
-                  onTap:
-                      () => setState(() {
-                        _selectedMethod = m;
-                        _isMixed = false;
-                        _selectedAccount =
-                            m.cuentas.isEmpty ? null : m.cuentas.first;
-                        _referenceController.clear();
-                        _cashController.clear();
-                      }),
+                  subtitle:
+                      m.id == ApiService.ligoMethodId
+                          ? 'QR con el monto exacto · se confirma solo'
+                          : null,
+                  onTap: () => _selectMethod(m),
                 ),
               ),
+              if (_isLigo) ...[
+                const SizedBox(height: 6),
+                LigoQrPanel(
+                  qr: _ligo,
+                  loading: _ligoLoading,
+                  error: _ligoError,
+                  onRetry: _startLigo,
+                  onRegenerate: _startLigo,
+                  onRefresh: _refreshLigo,
+                ),
+              ],
               if (_isMixed) ...[
                 const SizedBox(height: 8),
                 const Text(
@@ -2039,11 +2159,13 @@ class _MethodTile extends StatelessWidget {
     required this.method,
     required this.selected,
     required this.onTap,
+    this.subtitle,
   });
 
   final PaymentMethod method;
   final bool selected;
   final VoidCallback onTap;
+  final String? subtitle;
 
   @override
   Widget build(BuildContext context) {
@@ -2080,6 +2202,14 @@ class _MethodTile extends StatelessWidget {
                       method.nombre,
                       style: const TextStyle(fontWeight: FontWeight.w800),
                     ),
+                    if (subtitle != null)
+                      Text(
+                        subtitle!,
+                        style: const TextStyle(
+                          color: AppTheme.textMuted,
+                          fontSize: 12,
+                        ),
+                      ),
                     if (method.requiereReferencia)
                       const Text(
                         'Requiere número de operación',

@@ -1,6 +1,7 @@
 import 'package:dio/dio.dart';
 import '../core/app_config.dart';
 import '../models/app_user.dart';
+import '../models/ligo_qr.dart';
 import '../models/order.dart';
 import '../models/payment_method.dart';
 import '../models/route_geometry.dart';
@@ -154,7 +155,34 @@ class ApiService {
         rawQrs is List
             ? rawQrs.map((e) => PaymentAccount.fromJson(_asMap(e))).toList()
             : [for (final m in methods) ...m.cuentas];
-    return buildPaymentOptions(methods, qrs);
+    // Ligo Pay no está en el catálogo: el backend avisa si se puede ofrecer
+    // (configurado y con saldo cobrable para este pedido).
+    final rawLigo = data is Map ? data['ligo'] : null;
+    final ligo = rawLigo is Map && rawLigo['disponible'] == true;
+    return buildPaymentOptions(methods, qrs, ligo: ligo);
+  }
+
+  /// Genera el QR de Ligo Pay por el saldo del pedido, o devuelve el que ya
+  /// existe (también el que el cliente generó desde el tracking).
+  Future<LigoQr> createLigoQr(int orderId) async {
+    try {
+      final response = await _dio.post('/motorizado/pedidos/$orderId/ligo-qr');
+      return LigoQr.fromJson(_asMap(response.data));
+    } on DioException catch (error) {
+      // Sin saldo o por debajo del mínimo de Ligo: es un estado que se
+      // muestra, no un fallo.
+      final data = _asMap(error.response?.data);
+      if (error.response?.statusCode == 422 && data['status'] != null) {
+        return LigoQr.fromJson(data);
+      }
+      rethrow;
+    }
+  }
+
+  /// Estado del cobro. No llama a Ligo, solo lee lo que dejó su webhook.
+  Future<LigoQr> getLigoQr(int orderId) async {
+    final response = await _dio.get('/motorizado/pedidos/$orderId/ligo-qr');
+    return LigoQr.fromJson(_asMap(response.data));
   }
 
   static bool _isWalletMethod(PaymentMethod method) {
@@ -164,11 +192,13 @@ class ApiService {
 
   /// Yape y Plin se reemplazan por una sola opción "QR" con todos los QR
   /// activos (sin repetir y sin los desactivados en ZAZU). Transferencia
-  /// suma también las cuentas bancarias de esa lista.
+  /// suma también las cuentas bancarias de esa lista. Con [ligo], Ligo Pay
+  /// va primero: es el único cobro que se confirma solo.
   static List<PaymentMethod> buildPaymentOptions(
     List<PaymentMethod> methods,
-    List<PaymentAccount> qrs,
-  ) {
+    List<PaymentAccount> qrs, {
+    bool ligo = false,
+  }) {
     final activeQrs =
         <int, PaymentAccount>{
           for (final qr in qrs)
@@ -178,7 +208,16 @@ class ApiService {
       (qr) => qr.paymentCode == 'TRANSFERENCIA',
     );
 
-    final options = <PaymentMethod>[];
+    final options = <PaymentMethod>[
+      if (ligo)
+        const PaymentMethod(
+          id: ligoMethodId,
+          codigo: ligoPayCode,
+          nombre: 'Ligo Pay',
+          requiereReferencia: false,
+          cuentas: [],
+        ),
+    ];
     for (final method in methods) {
       if (_isWalletMethod(method)) continue;
       final accounts = <int, PaymentAccount>{
@@ -205,6 +244,13 @@ class ApiService {
 
   /// Id local de la opción "QR" (no existe en el catálogo del backend).
   static const qrMethodId = -1;
+
+  /// Id local de la opción "Ligo Pay" (tampoco existe en el catálogo).
+  static const ligoMethodId = -2;
+
+  /// Medio con el que se registra la entrega cobrada con Ligo Pay. El backend
+  /// solo la acepta si el webhook de Ligo ya confirmó el pago.
+  static const ligoPayCode = 'LIGO PAY';
 
   Future<void> confirmDelivery(
     int orderId, {

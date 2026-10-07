@@ -21,6 +21,8 @@ dependencies:
   mobile_scanner: ^6.0.11
   url_launcher: ^6.3.1
   intl: ^0.20.2
+  # Dibuja el QR de Ligo Pay: el backend solo entrega la cadena EMV.
+  qr_flutter: ^4.1.0
 
 dev_dependencies:
   flutter_test:

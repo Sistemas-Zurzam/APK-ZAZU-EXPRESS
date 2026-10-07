@@ -102,6 +102,26 @@ void main() {
       expect(options.map((o) => o.codigo), ['EFECTIVO']);
     });
 
+    test('Ligo Pay va primero solo cuando el backend lo ofrece', () {
+      final conLigo = ApiService.buildPaymentOptions(
+        [method('EFECTIVO')],
+        const [],
+        ligo: true,
+      );
+      expect(conLigo.map((o) => o.codigo), [
+        ApiService.ligoPayCode,
+        'EFECTIVO',
+      ]);
+      expect(conLigo.first.id, ApiService.ligoMethodId);
+      expect(conLigo.first.cuentas, isEmpty);
+
+      final sinLigo = ApiService.buildPaymentOptions(
+        [method('EFECTIVO')],
+        const [],
+      );
+      expect(sinLigo.map((o) => o.codigo), ['EFECTIVO']);
+    });
+
     test('registra el cobro con el medio real del QR', () {
       expect(bbva.paymentCode, 'TRANSFERENCIA');
       expect(yapeInactivo.paymentCode, 'YAPE');
