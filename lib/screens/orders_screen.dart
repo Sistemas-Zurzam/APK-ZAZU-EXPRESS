@@ -1684,12 +1684,7 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
     final method = _selectedMethod;
     // Ligo Pay lo confirma su webhook: no hay captura que pedir.
     if (method == null || _isCash || _isLigo) return false;
-    final value = '${method.codigo} ${method.nombre}'.toLowerCase();
-    return value.contains('qr') ||
-        value.contains('yape') ||
-        value.contains('plin') ||
-        value.contains('transfer') ||
-        value.contains('tarjeta');
+    return method.exigeComprobante;
   }
 
   /// En efectivo se cobra siempre el saldo completo (no editable); en pago

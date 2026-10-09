@@ -216,6 +216,8 @@ class ApiService {
           nombre: 'Ligo Pay',
           requiereReferencia: false,
           cuentas: [],
+          // Lo confirma el webhook de Ligo: no hay captura que pedir.
+          requiereComprobante: false,
         ),
     ];
     for (final method in methods) {
@@ -236,6 +238,7 @@ class ApiService {
           nombre: 'QR',
           requiereReferencia: false,
           cuentas: activeQrs,
+          requiereComprobante: true,
         ),
       );
     }

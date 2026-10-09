@@ -40,6 +40,47 @@ void main() {
     expect(method.cuentas, hasLength(2));
   });
 
+  group('comprobante', () {
+    PaymentMethod parse(
+      String codigo, [
+      Map<String, dynamic> extra = const {},
+    ]) => PaymentMethod.fromJson({
+      'id': 1,
+      'codigo': codigo,
+      'nombre': codigo,
+      ...extra,
+    });
+
+    test('lo decide el catálogo de ZAZU', () {
+      bool exige(String codigo, bool catalogo) =>
+          parse(codigo, {'requiere_comprobante': catalogo}).exigeComprobante;
+
+      expect(exige('CAMBIO', true), isTrue);
+      expect(exige('TRANSFERENCIA', false), isFalse);
+      expect(exige('PAGO_PROVEEDOR', false), isFalse);
+    });
+
+    test('sin el dato del backend se deduce del nombre', () {
+      expect(parse('TRANSFERENCIA').exigeComprobante, isTrue);
+      expect(parse('CAMBIO').exigeComprobante, isFalse);
+    });
+
+    test('Ligo Pay no lo pide y la opción QR sí', () {
+      final options = ApiService.buildPaymentOptions(
+        const [],
+        const [PaymentAccount(id: 1, proveedor: 'Plin')],
+        ligo: true,
+      );
+      expect(options.first.exigeComprobante, isFalse);
+      expect(options.last.exigeComprobante, isTrue);
+    });
+
+    test('copyWith conserva el dato del catálogo', () {
+      final method = parse('CAMBIO', {'requiere_comprobante': true});
+      expect(method.copyWith(cuentas: const []).exigeComprobante, isTrue);
+    });
+  });
+
   test('reconoce cuentas desactivadas en cualquier formato', () {
     bool activo(Map<String, dynamic> extra) =>
         PaymentAccount.fromJson({'id': 1, ...extra}).activo;
