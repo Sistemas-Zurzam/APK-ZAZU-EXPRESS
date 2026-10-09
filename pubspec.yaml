@@ -1,5 +1,5 @@
 name: zazu_driver
-version: 2.2.7+38
+version: 2.2.8+39
 publish_to: none
 description: ZAZU Driver para Android e iOS conectado a Laravel 12.
 

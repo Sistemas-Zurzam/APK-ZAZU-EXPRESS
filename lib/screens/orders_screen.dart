@@ -1560,9 +1560,9 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
   /// Es la lista del borrador: lo que se toma aquí queda guardado.
   List<XFile?> get _photos => widget.draft.photos;
 
-  /// El comprobante (Foto 3) es obligatorio en pagos digitales y mixtos; en
-  /// efectivo o contra entrega no hay comprobante que fotografiar.
-  bool get _requiresProofPhoto => _isMixed || _supportsPaymentProof;
+  /// El comprobante (Foto 3) solo es obligatorio en el pago mixto: ahí es lo
+  /// único que respalda la parte digital. En los demás medios es opcional.
+  bool get _requiresProofPhoto => _isMixed;
 
   bool get _photosComplete =>
       _photos[0] != null &&
@@ -1678,14 +1678,6 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
   }
 
   bool get _requiresReference => _selectedMethod?.requiereReferencia ?? false;
-
-  bool get _supportsPaymentProof {
-    if (_isMixed) return true;
-    final method = _selectedMethod;
-    // Ligo Pay lo confirma su webhook: no hay captura que pedir.
-    if (method == null || _isCash || _isLigo) return false;
-    return method.exigeComprobante;
-  }
 
   /// En efectivo se cobra siempre el saldo completo (no editable); en pago
   /// mixto el motorizado ingresa la parte pagada en efectivo.
