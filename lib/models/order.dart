@@ -48,20 +48,19 @@ class DeliveryOrder {
   final Map<String, dynamic> rawJson;
 
   bool get hasCoordinates => latitude != null && longitude != null;
+  bool get isNotDelivered {
+    final value = status.toLowerCase();
+    return value.contains('no_entreg') || value.contains('no entreg');
+  }
+
   bool get isDelivered {
-    final value = status.toLowerCase().replaceAll('_', ' ');
-    if (isNotDelivered) return false;
+    final value = status.toLowerCase();
+    if (isNotDelivered || value.contains('devuelt')) {
+      return false;
+    }
     return value.contains('entreg') ||
         value.contains('finaliz') ||
         value.contains('complet');
-  }
-
-  bool get isNotDelivered {
-    final value = status.toLowerCase().replaceAll('_', ' ');
-    return value.contains('no entreg') ||
-        value.contains('cancel') ||
-        value.contains('fall') ||
-        value.contains('devol');
   }
 
   bool get isClosed => isDelivered || isNotDelivered;
@@ -75,7 +74,10 @@ class DeliveryOrder {
       !isDelivered;
 
   bool get isReceived =>
-      status.toLowerCase().contains('recepcionad') || isInRoute || isClosed;
+      status.toLowerCase().contains('recepcionad') ||
+      isInRoute ||
+      isDelivered ||
+      isNotDelivered;
 
   bool get isInRoute {
     final value = status.toLowerCase();
@@ -165,7 +167,7 @@ class DeliveryOrder {
         ]),
         'Sin dirección',
       ),
-      amountDue: _parseMoney(_findValue(json, ['cuenta_cliente'])),
+      amountDue: _amountDue(json),
       status:
           _stringOrDefault(
             _findValue(json, ['estado_operacion', 'estado_nombre', 'estado']),
@@ -359,6 +361,34 @@ class DeliveryOrder {
     return key.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
   }
 
+  /// El backend manda el saldo en `cuenta_cliente` y `monto_cobrar` también
+  /// cuando es cero: un pedido ya pagado (p. ej. con el QR de Ligo desde el
+  /// tracking) llega en 0. _findMoney salta los ceros y caía en `monto_total`,
+  /// así que la app pedía cobrar el total de un pedido que ya estaba pagado.
+  static double _amountDue(Map<String, dynamic> json) {
+    for (final key in const ['cuenta_cliente', 'monto_cobrar']) {
+      final value = json[key];
+      if (value != null && value.toString().trim().isNotEmpty) {
+        return _parseMoney(value);
+      }
+    }
+    return _findMoney(json, [
+      'monto_pendiente',
+      'monto_cobrar',
+      'monto_por_cobrar',
+      'monto_a_cobrar',
+      'monto_total',
+      'importe_pendiente',
+      'saldo_pendiente',
+      'saldo_a_cobrar',
+      'cuenta_cliente',
+      'saldo',
+      'total_pendiente',
+      'total_cobrar',
+      'total',
+    ]);
+  }
+
   static double _findMoney(Map<String, dynamic> json, List<String> keys) {
     double fallback = 0;
     for (final key in keys) {
@@ -373,7 +403,7 @@ class DeliveryOrder {
 
   static String _stringOrDefault(dynamic value, String fallback) {
     final text = _stringOrNull(value);
-    return text == null ? fallback : text;
+    return text ?? fallback;
   }
 
   static String? _stringOrNull(dynamic value) {

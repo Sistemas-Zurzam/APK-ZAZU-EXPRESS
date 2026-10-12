@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
@@ -9,10 +10,12 @@ import '../core/currency_format.dart';
 import '../core/external_navigation.dart';
 import '../core/media_url.dart';
 import '../core/route_rules.dart';
+import '../models/ligo_qr.dart';
 import '../models/order.dart';
 import '../models/payment_method.dart';
 import '../services/api_service.dart';
 import '../state/providers.dart';
+import '../widgets/ligo_qr_panel.dart';
 import '../widgets/order_card.dart';
 import '../widgets/packing_order_sheet.dart';
 
@@ -69,7 +72,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
     if (index == -1) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
-        _showNotDeliveredDialog(
+        _showNoDeliveryDialog(
           context,
           items[index],
           closeParentOnSuccess: false,
@@ -389,8 +392,10 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
                             },
                             onDeliver:
                                 () => _deliverWithEvidence(context, order),
-                            onNotDelivered:
-                                () => _showNotDeliveredDialog(context, order),
+                            onNoDelivery:
+                                () => _showNoDeliveryDialog(context, order),
+                            onReschedule:
+                                () => _showRescheduleDialog(context, order),
                             onMap:
                                 order.hasCoordinates
                                     ? () {
@@ -688,26 +693,56 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
     );
   }
 
-  Future<void> _showNotDeliveredDialog(
+  Future<void> _showRescheduleDialog(
     BuildContext context,
-    DeliveryOrder order, {
-    bool closeParentOnSuccess = true,
-  }) async {
-    final result = await showDialog<({String reason, String photoPath})>(
+    DeliveryOrder order,
+  ) async {
+    final result = await showDialog<({String reason, String date})>(
       context: context,
-      builder: (context) => const _NotDeliveredDialog(),
+      builder: (context) => const _RescheduleDialog(),
     );
     if (result == null || !context.mounted) return;
 
     await _runOrderAction(
       context,
-      actionKey: 'not_delivered',
+      actionKey: 'reschedule',
+      successMessage: 'Pedido reprogramado.',
+      action:
+          () => ref
+              .read(apiProvider)
+              .rescheduleOrder(
+                order.id,
+                result.reason,
+                result.date,
+                operationId: order.operationId,
+              ),
+    );
+  }
+
+  Future<void> _showNoDeliveryDialog(
+    BuildContext context,
+    DeliveryOrder order, {
+    bool closeParentOnSuccess = true,
+  }) async {
+    final result = await showDialog<_NoDeliveryReport>(
+      context: context,
+      builder: (context) => const _NoDeliveryDialog(),
+    );
+    if (result == null || !context.mounted) return;
+
+    await _runOrderAction(
+      context,
+      actionKey: 'no_delivery',
       successMessage: 'Pedido registrado como no entregado.',
       closeContextOnSuccess: closeParentOnSuccess,
       action:
           () => ref
               .read(apiProvider)
-              .markNotDelivered(order.id, result.reason, result.photoPath),
+              .markNotDelivered(
+                order.id,
+                reason: result.reason,
+                evidencePath: result.evidence.path,
+              ),
     );
   }
 
@@ -845,6 +880,283 @@ class _EvidenceSlot extends StatelessWidget {
   }
 }
 
+class _RescheduleDialog extends StatefulWidget {
+  const _RescheduleDialog();
+
+  @override
+  State<_RescheduleDialog> createState() => _RescheduleDialogState();
+}
+
+class _RescheduleDialogState extends State<_RescheduleDialog> {
+  final _reasonController = TextEditingController();
+  DateTime? _date;
+  String? _error;
+
+  @override
+  void dispose() {
+    _reasonController.dispose();
+    super.dispose();
+  }
+
+  String _apiDate(DateTime d) =>
+      '${d.year}-${d.month.toString().padLeft(2, '0')}-'
+      '${d.day.toString().padLeft(2, '0')}';
+
+  String _displayDate(DateTime d) =>
+      '${d.day.toString().padLeft(2, '0')}/'
+      '${d.month.toString().padLeft(2, '0')}/${d.year}';
+
+  Future<void> _pickDate() async {
+    final today = DateUtils.dateOnly(DateTime.now());
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _date ?? today.add(const Duration(days: 1)),
+      firstDate: today,
+      lastDate: today.add(const Duration(days: 60)),
+      helpText: 'Nueva fecha de entrega',
+      cancelText: 'Cancelar',
+      confirmText: 'Elegir',
+    );
+    if (picked != null) {
+      setState(() {
+        _date = picked;
+        _error = null;
+      });
+    }
+  }
+
+  void _submit() {
+    final reason = _reasonController.text.trim();
+    if (reason.isEmpty || _date == null) {
+      setState(
+        () =>
+            _error =
+                reason.isEmpty
+                    ? 'Escribe el motivo de la reprogramación.'
+                    : 'Elige la nueva fecha de entrega.',
+      );
+      return;
+    }
+    Navigator.pop(context, (reason: reason, date: _apiDate(_date!)));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Reprogramar pedido'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextField(
+            controller: _reasonController,
+            decoration: const InputDecoration(
+              labelText: 'Motivo',
+              hintText: 'Ej.: cliente no se encuentra',
+            ),
+            textCapitalization: TextCapitalization.sentences,
+            onChanged: (_) {
+              if (_error != null) setState(() => _error = null);
+            },
+          ),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: _pickDate,
+            icon: const Icon(Icons.calendar_month_outlined),
+            label: Text(
+              _date == null ? 'Elegir nueva fecha' : _displayDate(_date!),
+            ),
+          ),
+          if (_error != null) ...[
+            const SizedBox(height: 10),
+            Text(_error!, style: const TextStyle(color: AppTheme.danger)),
+          ],
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('Enviar')),
+      ],
+    );
+  }
+}
+
+class _NoDeliveryReport {
+  const _NoDeliveryReport({required this.reason, required this.evidence});
+
+  final String reason;
+  final XFile evidence;
+}
+
+class _NoDeliveryDialog extends StatefulWidget {
+  const _NoDeliveryDialog();
+
+  @override
+  State<_NoDeliveryDialog> createState() => _NoDeliveryDialogState();
+}
+
+class _NoDeliveryDialogState extends State<_NoDeliveryDialog> {
+  final _reasonController = TextEditingController();
+  XFile? _evidence;
+  String? _error;
+
+  @override
+  void dispose() {
+    _reasonController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickEvidence() async {
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      showDragHandle: true,
+      backgroundColor: AppTheme.surface,
+      builder:
+          (context) => SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(20, 0, 20, 8),
+                  child: Text(
+                    'Evidencia de la visita',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                  ),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.camera_alt_outlined),
+                  title: const Text('Tomar una foto'),
+                  onTap: () => Navigator.pop(context, ImageSource.camera),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.image_outlined),
+                  title: const Text('Adjuntar foto o captura'),
+                  onTap: () => Navigator.pop(context, ImageSource.gallery),
+                ),
+                const SizedBox(height: 8),
+              ],
+            ),
+          ),
+    );
+    if (source == null) return;
+
+    final image = await ImagePicker().pickImage(
+      source: source,
+      imageQuality: 78,
+      maxWidth: 1600,
+    );
+    if (image != null && mounted) {
+      setState(() {
+        _evidence = image;
+        _error = null;
+      });
+    }
+  }
+
+  void _submit() {
+    final reason = _reasonController.text.trim();
+    if (reason.isEmpty || _evidence == null) {
+      setState(() {
+        _error =
+            reason.isEmpty
+                ? 'Escribe el motivo de la entrega fallida.'
+                : 'Adjunta una foto o captura como evidencia.';
+      });
+      return;
+    }
+    Navigator.pop(
+      context,
+      _NoDeliveryReport(reason: reason, evidence: _evidence!),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Marcar como no entregado'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              'Indica el motivo y adjunta una evidencia obligatoria. Puedes '
+              'tomar una foto o elegir una imagen o captura de tu galería.',
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: _reasonController,
+              maxLength: 500,
+              maxLines: 3,
+              decoration: const InputDecoration(
+                labelText: 'Motivo',
+                hintText: 'Ej.: cliente ausente',
+                alignLabelWithHint: true,
+              ),
+              textCapitalization: TextCapitalization.sentences,
+              onChanged: (_) {
+                if (_error != null) setState(() => _error = null);
+              },
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: _pickEvidence,
+              icon: Icon(
+                _evidence == null
+                    ? Icons.add_a_photo_outlined
+                    : Icons.change_circle_outlined,
+              ),
+              label: Text(
+                _evidence == null
+                    ? 'Adjuntar evidencia *'
+                    : 'Cambiar evidencia',
+              ),
+              style: OutlinedButton.styleFrom(
+                minimumSize: const Size.fromHeight(50),
+              ),
+            ),
+            if (_evidence != null) ...[
+              const SizedBox(height: 10),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(14),
+                child: Image.file(
+                  File(_evidence!.path),
+                  height: 150,
+                  fit: BoxFit.cover,
+                ),
+              ),
+              TextButton.icon(
+                onPressed: () => setState(() => _evidence = null),
+                icon: const Icon(Icons.delete_outline),
+                label: const Text('Quitar evidencia'),
+              ),
+            ],
+            if (_error != null) ...[
+              const SizedBox(height: 8),
+              Text(_error!, style: const TextStyle(color: AppTheme.danger)),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton.icon(
+          onPressed: _submit,
+          icon: const Icon(Icons.report_gmailerrorred_outlined),
+          label: const Text('Registrar'),
+          style: FilledButton.styleFrom(backgroundColor: AppTheme.danger),
+        ),
+      ],
+    );
+  }
+}
+
 class _OrderActions extends StatelessWidget {
   const _OrderActions({
     required this.order,
@@ -852,7 +1164,8 @@ class _OrderActions extends StatelessWidget {
     required this.onReception,
     required this.onStartRoute,
     required this.onDeliver,
-    required this.onNotDelivered,
+    required this.onNoDelivery,
+    required this.onReschedule,
     required this.onMap,
   });
 
@@ -861,11 +1174,13 @@ class _OrderActions extends StatelessWidget {
   final VoidCallback onReception;
   final VoidCallback onStartRoute;
   final VoidCallback onDeliver;
-  final VoidCallback onNotDelivered;
+  final VoidCallback onNoDelivery;
+  final VoidCallback onReschedule;
   final VoidCallback? onMap;
 
   @override
   Widget build(BuildContext context) {
+    // Entregado o no entregado: ya no admite acciones.
     final isDelivered = order.isClosed;
     final isRoute = order.isInRoute;
     final processing = runningAction != null;
@@ -875,29 +1190,67 @@ class _OrderActions extends StatelessWidget {
 
     return Column(
       children: [
-        if (showPrimary)
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed:
-                  processing || isDelivered
-                      ? null
-                      : (isRoute ? onDeliver : onReception),
-              icon:
-                  runningAction == 'primary'
-                      ? const _ButtonSpinner()
-                      : Icon(
-                        isRoute
-                            ? Icons.check_circle_outline
-                            : Icons.inventory_2_outlined,
-                      ),
-              label: Text(
-                runningAction == 'primary'
-                    ? (isRoute ? 'Entregando...' : 'Recepcionando...')
-                    : (isRoute ? 'Entregar' : 'Recepcionar'),
+        Row(
+          children: [
+            if (showPrimary) ...[
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed:
+                      processing || isDelivered
+                          ? null
+                          : (isRoute ? onDeliver : onReception),
+                  icon:
+                      runningAction == 'primary'
+                          ? const _ButtonSpinner()
+                          : Icon(
+                            isRoute
+                                ? Icons.check_circle_outline
+                                : Icons.inventory_2_outlined,
+                          ),
+                  label: Text(
+                    runningAction == 'primary'
+                        ? (isRoute ? 'Entregando...' : 'Recepcionando...')
+                        : (isRoute ? 'Entregar' : 'Recepcionar'),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+            ],
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: processing || isDelivered ? null : onReschedule,
+                icon: const Icon(Icons.event_repeat_outlined),
+                label: const Text('Reprogramar'),
+                style: OutlinedButton.styleFrom(
+                  minimumSize: const Size.fromHeight(52),
+                ),
+              ),
+            ),
+          ],
+        ),
+        if (isRoute) ...[
+          const SizedBox(height: 10),
+          OutlinedButton.icon(
+            onPressed: processing || isDelivered ? null : onNoDelivery,
+            icon:
+                runningAction == 'no_delivery'
+                    ? const _ButtonSpinner()
+                    : const Icon(Icons.report_problem_outlined),
+            label: Text(
+              runningAction == 'no_delivery'
+                  ? 'Registrando...'
+                  : 'No entregado',
+            ),
+            style: OutlinedButton.styleFrom(
+              minimumSize: const Size.fromHeight(50),
+              foregroundColor: AppTheme.danger,
+              side: const BorderSide(color: AppTheme.danger),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(18),
               ),
             ),
           ),
+        ],
         const SizedBox(height: 10),
         Row(
           children: [
@@ -927,222 +1280,7 @@ class _OrderActions extends StatelessWidget {
             ),
           ],
         ),
-        if (isRoute && !isDelivered) ...[
-          const SizedBox(height: 10),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: processing ? null : onNotDelivered,
-              icon:
-                  runningAction == 'not_delivered'
-                      ? const _ButtonSpinner()
-                      : const Icon(Icons.report_problem_outlined),
-              label: Text(
-                runningAction == 'not_delivered'
-                    ? 'Registrando...'
-                    : 'No entregado',
-              ),
-              style: OutlinedButton.styleFrom(
-                foregroundColor: AppTheme.danger,
-                side: const BorderSide(color: AppTheme.danger),
-                minimumSize: const Size.fromHeight(52),
-              ),
-            ),
-          ),
-        ],
       ],
-    );
-  }
-}
-
-class _NotDeliveredDialog extends StatefulWidget {
-  const _NotDeliveredDialog();
-
-  @override
-  State<_NotDeliveredDialog> createState() => _NotDeliveredDialogState();
-}
-
-class _NotDeliveredDialogState extends State<_NotDeliveredDialog> {
-  final _reasonController = TextEditingController();
-  final _imagePicker = ImagePicker();
-  XFile? _photo;
-  String? _error;
-
-  @override
-  void dispose() {
-    _reasonController.dispose();
-    super.dispose();
-  }
-
-  void _submit() {
-    final reason = _reasonController.text.trim();
-    if (reason.isEmpty || _photo == null) {
-      setState(() {
-        _error =
-            reason.isEmpty
-                ? 'Escribe el motivo de la no entrega.'
-                : 'Toma una foto de evidencia para continuar.';
-      });
-      return;
-    }
-    Navigator.pop(context, (reason: reason, photoPath: _photo!.path));
-  }
-
-  Future<void> _pickPhoto(ImageSource source) async {
-    try {
-      final photo = await _imagePicker.pickImage(
-        source: source,
-        imageQuality: 82,
-        maxWidth: 1600,
-      );
-      if (photo != null && mounted) {
-        setState(() {
-          _photo = photo;
-          if (_error != null && _reasonController.text.trim().isNotEmpty) {
-            _error = null;
-          }
-        });
-      }
-    } catch (_) {
-      if (mounted) {
-        setState(
-          () =>
-              _error =
-                  source == ImageSource.camera
-                      ? 'No se pudo abrir la cámara. Revisa los permisos e inténtalo otra vez.'
-                      : 'No se pudo adjuntar la imagen. Inténtalo otra vez.',
-        );
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final keyboardInset = MediaQuery.viewInsetsOf(context).bottom;
-    return Dialog(
-      insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
-      child: ConstrainedBox(
-        constraints: BoxConstraints(
-          maxWidth: 440,
-          maxHeight: MediaQuery.sizeOf(context).height - keyboardInset - 40,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Flexible(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(24, 20, 24, 12),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(
-                      Icons.report_problem_outlined,
-                      color: AppTheme.danger,
-                    ),
-                    const SizedBox(height: 12),
-                    const Text(
-                      'Marcar como no entregado',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    const Text(
-                      'Indica el motivo y toma una foto que ayude al área administrativa a coordinar con el cliente.',
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 14),
-                    if (_photo != null) ...[
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(12),
-                        child: Image.file(
-                          File(_photo!.path),
-                          height: 130,
-                          width: double.infinity,
-                          fit: BoxFit.cover,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                    ],
-                    Row(
-                      children: [
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            onPressed: () => _pickPhoto(ImageSource.camera),
-                            icon: const Icon(Icons.camera_alt_outlined),
-                            label: Text(
-                              _photo == null ? 'Tomar foto' : 'Retomar',
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            onPressed: () => _pickPhoto(ImageSource.gallery),
-                            icon: const Icon(Icons.photo_library_outlined),
-                            label: const Text('Adjuntar'),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: _reasonController,
-                      autofocus: true,
-                      maxLines: 3,
-                      minLines: 2,
-                      textCapitalization: TextCapitalization.sentences,
-                      decoration: InputDecoration(
-                        labelText: 'Motivo',
-                        hintText: 'Ej.: cliente ausente o dirección incorrecta',
-                        errorText:
-                            _reasonController.text.trim().isEmpty
-                                ? _error
-                                : null,
-                      ),
-                      onChanged: (_) {
-                        if (_error != null && _photo != null) {
-                          setState(() => _error = null);
-                        }
-                      },
-                    ),
-                    if (_error != null &&
-                        _reasonController.text.trim().isNotEmpty) ...[
-                      const SizedBox(height: 8),
-                      Text(
-                        _error!,
-                        style: const TextStyle(color: AppTheme.danger),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text('Cancelar'),
-                  ),
-                  const SizedBox(width: 8),
-                  FilledButton(
-                    onPressed: _submit,
-                    style: FilledButton.styleFrom(
-                      backgroundColor: AppTheme.danger,
-                    ),
-                    child: const Text('Confirmar'),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
     );
   }
 }
@@ -1672,13 +1810,23 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
     text: widget.draft.cashText,
   );
 
+  /// Cobro con Ligo Pay: el QR lo genera el backend y el pago lo confirma el
+  /// webhook de Ligo; aquí solo se consulta el estado mientras se espera.
+  LigoQr? _ligo;
+  bool _ligoLoading = false;
+  String? _ligoError;
+  Timer? _ligoPolling;
+  bool _ligoRefreshing = false;
+
+  bool get _isLigo => _selectedMethod?.id == ApiService.ligoMethodId;
+
   /// Foto 1 y Foto 2 (entrega) y Foto 3 (comprobante), en cualquier medio.
   /// Es la lista del borrador: lo que se toma aquí queda guardado.
   List<XFile?> get _photos => widget.draft.photos;
 
-  /// El comprobante (Foto 3) es obligatorio en pagos digitales y mixtos; en
-  /// efectivo o contra entrega no hay comprobante que fotografiar.
-  bool get _requiresProofPhoto => _isMixed || _supportsPaymentProof;
+  /// El comprobante (Foto 3) solo es obligatorio en el pago mixto: ahí es lo
+  /// único que respalda la parte digital. En los demás medios es opcional.
+  bool get _requiresProofPhoto => _isMixed;
 
   bool get _photosComplete =>
       _photos[0] != null &&
@@ -1700,9 +1848,93 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
       ..paymentConcept = _selectedConcept
       ..proveedor = _selectedProvider
       ..isMixed = _isMixed;
+    _stopLigoPolling();
     _referenceController.dispose();
     _cashController.dispose();
     super.dispose();
+  }
+
+  /// Pide el QR (o el que ya existe: el del tracking también sirve) y empieza
+  /// a esperar el pago.
+  Future<void> _startLigo() async {
+    _stopLigoPolling();
+    setState(() {
+      _ligoLoading = true;
+      _ligoError = null;
+    });
+    try {
+      final qr = await ref.read(apiProvider).createLigoQr(widget.order.id);
+      if (!mounted || !_isLigo) return;
+      setState(() {
+        _ligo = qr;
+        _ligoLoading = false;
+      });
+      if (qr.isActive) {
+        // El cliente está frente al motorizado: cada 5 s basta para que la
+        // confirmación aparezca apenas pague, sin cargar al servidor.
+        _ligoPolling = Timer.periodic(
+          const Duration(seconds: 5),
+          (_) => _refreshLigo(),
+        );
+      }
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _ligoLoading = false;
+        _ligoError = _ligoErrorText(error);
+      });
+    }
+  }
+
+  Future<void> _refreshLigo() async {
+    if (_ligoRefreshing) return;
+    _ligoRefreshing = true;
+    try {
+      final qr = await ref.read(apiProvider).getLigoQr(widget.order.id);
+      if (!mounted || !_isLigo) return;
+      setState(() {
+        _ligo = qr;
+        _ligoError = null;
+      });
+      if (!qr.isActive) _stopLigoPolling();
+    } catch (_) {
+      // Sin señal un momento: se vuelve a consultar en el siguiente ciclo.
+    } finally {
+      _ligoRefreshing = false;
+    }
+  }
+
+  void _stopLigoPolling() {
+    _ligoPolling?.cancel();
+    _ligoPolling = null;
+  }
+
+  static String _ligoErrorText(Object error) {
+    if (error is DioException) {
+      final data = error.response?.data;
+      final message = data is Map ? data['message']?.toString().trim() : null;
+      if (message != null && message.isNotEmpty) return message;
+      if (error.response == null) {
+        return 'No se pudo conectar con el servidor. Revisa tu conexión.';
+      }
+    }
+    return 'No se pudo generar el QR de Ligo Pay.';
+  }
+
+  void _selectMethod(PaymentMethod m) {
+    setState(() {
+      _selectedConcept = null;
+      _selectedMethod = m;
+      _isMixed = false;
+      _selectedAccount = m.cuentas.isEmpty ? null : m.cuentas.first;
+      _referenceController.clear();
+      _cashController.clear();
+    });
+    if (m.id == ApiService.ligoMethodId) {
+      _startLigo();
+    } else {
+      _stopLigoPolling();
+    }
   }
 
   bool get _isCash {
@@ -1713,18 +1945,6 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
   }
 
   bool get _requiresReference => _selectedMethod?.requiereReferencia ?? false;
-
-  bool get _supportsPaymentProof {
-    if (_isMixed) return true;
-    final method = _selectedMethod;
-    if (method == null || _isCash) return false;
-    final value = '${method.codigo} ${method.nombre}'.toLowerCase();
-    return value.contains('qr') ||
-        value.contains('yape') ||
-        value.contains('plin') ||
-        value.contains('transfer') ||
-        value.contains('tarjeta');
-  }
 
   /// En efectivo se cobra siempre el saldo completo (no editable); en pago
   /// mixto el motorizado ingresa la parte pagada en efectivo.
@@ -1740,6 +1960,8 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
   }
 
   bool _isDigitalMethod(PaymentMethod method) {
+    // El QR de Ligo cobra el saldo completo, no la parte digital de un mixto.
+    if (method.id == ApiService.ligoMethodId) return false;
     final value = '${method.codigo} ${method.nombre}'.toLowerCase();
     return value.contains('qr') ||
         value.contains('yape') ||
@@ -1764,6 +1986,7 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
     }
     final method = _selectedMethod;
     if (method == null) return false;
+    if (_isLigo) return (_ligo?.isPaid ?? false) && _photosComplete;
     if (method.cuentas.isNotEmpty && _selectedAccount == null) return false;
     if (_requiresReference && _referenceController.text.trim().isEmpty) {
       return false;
@@ -1802,7 +2025,11 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
         yapeAlias: _selectedAccount?.alias,
         montoEfectivo: cashAmount,
         nroOperacion:
-            _requiresReference ? _referenceController.text.trim() : null,
+            _isLigo
+                ? _ligo?.instructionId
+                : (_requiresReference
+                    ? _referenceController.text.trim()
+                    : null),
         paymentProofPath: _photos[2]?.path,
         evidencePaths: [_photos[0]!.path, _photos[1]!.path],
         proveedor: _selectedProvider,
@@ -1872,6 +2099,13 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
         _selectedMethod = m;
         _isMixed = widget.draft.isMixed;
         _selectedAccount = m.cuentas.isEmpty ? null : m.cuentas.first;
+        // Al reintentar con Ligo se vuelve a consultar el cobro: puede haberse
+        // pagado mientras la pantalla estaba cerrada.
+        if (_isLigo) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && _isLigo) _startLigo();
+          });
+        }
         return;
       }
     }
@@ -1886,6 +2120,7 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
   }
 
   void _selectConcept(String concept) {
+    _stopLigoPolling();
     setState(() {
       _selectedConcept = concept;
       _selectedMethod = null;
@@ -2038,35 +2273,43 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
               if (widget.order.amountDue > 0 && mixedMethods.isNotEmpty)
                 _MixedPaymentTile(
                   selected: _isMixed,
-                  onTap:
-                      () => setState(() {
-                        _selectedConcept = null;
-                        _isMixed = true;
-                        _selectedMethod = defaultMixedMethod;
-                        _selectedAccount =
-                            defaultMixedMethod == null ||
-                                    defaultMixedMethod.cuentas.isEmpty
-                                ? null
-                                : defaultMixedMethod.cuentas.first;
-                        _referenceController.clear();
-                      }),
+                  onTap: () {
+                    _stopLigoPolling();
+                    setState(() {
+                      _selectedConcept = null;
+                      _isMixed = true;
+                      _selectedMethod = defaultMixedMethod;
+                      _selectedAccount =
+                          defaultMixedMethod == null ||
+                                  defaultMixedMethod.cuentas.isEmpty
+                              ? null
+                              : defaultMixedMethod.cuentas.first;
+                      _referenceController.clear();
+                    });
+                  },
                 ),
               ...methods.map(
                 (m) => _MethodTile(
                   method: m,
                   selected: !_isMixed && method?.id == m.id,
-                  onTap:
-                      () => setState(() {
-                        _selectedConcept = null;
-                        _selectedMethod = m;
-                        _isMixed = false;
-                        _selectedAccount =
-                            m.cuentas.isEmpty ? null : m.cuentas.first;
-                        _referenceController.clear();
-                        _cashController.clear();
-                      }),
+                  subtitle:
+                      m.id == ApiService.ligoMethodId
+                          ? 'QR con el monto exacto · se confirma solo'
+                          : null,
+                  onTap: () => _selectMethod(m),
                 ),
               ),
+              if (_isLigo) ...[
+                const SizedBox(height: 6),
+                LigoQrPanel(
+                  qr: _ligo,
+                  loading: _ligoLoading,
+                  error: _ligoError,
+                  onRetry: _startLigo,
+                  onRegenerate: _startLigo,
+                  onRefresh: _refreshLigo,
+                ),
+              ],
               if (_isMixed) ...[
                 const SizedBox(height: 8),
                 const Text(
@@ -2336,11 +2579,13 @@ class _MethodTile extends StatelessWidget {
     required this.method,
     required this.selected,
     required this.onTap,
+    this.subtitle,
   });
 
   final PaymentMethod method;
   final bool selected;
   final VoidCallback onTap;
+  final String? subtitle;
 
   @override
   Widget build(BuildContext context) {
@@ -2377,6 +2622,14 @@ class _MethodTile extends StatelessWidget {
                       method.nombre,
                       style: const TextStyle(fontWeight: FontWeight.w800),
                     ),
+                    if (subtitle != null)
+                      Text(
+                        subtitle!,
+                        style: const TextStyle(
+                          color: AppTheme.textMuted,
+                          fontSize: 12,
+                        ),
+                      ),
                     if (method.requiereReferencia)
                       const Text(
                         'Requiere número de operación',

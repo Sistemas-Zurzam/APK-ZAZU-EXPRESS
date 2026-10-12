@@ -103,6 +103,7 @@ class PaymentMethod {
     required this.nombre,
     required this.requiereReferencia,
     required this.cuentas,
+    this.requiereComprobante,
   });
 
   final int id;
@@ -110,6 +111,23 @@ class PaymentMethod {
   final String nombre;
   final bool requiereReferencia;
   final List<PaymentAccount> cuentas;
+
+  /// Lo decide el catálogo de medios de pago de ZAZU. Es null si el backend
+  /// todavía no envía el campo.
+  final bool? requiereComprobante;
+
+  /// Si la entrega exige la foto del comprobante (Foto 3). Sin el dato del
+  /// catálogo se deduce del nombre, como antes de que el backend lo enviara.
+  bool get exigeComprobante {
+    final catalogo = requiereComprobante;
+    if (catalogo != null) return catalogo;
+    final value = '$codigo $nombre'.toLowerCase();
+    return value.contains('qr') ||
+        value.contains('yape') ||
+        value.contains('plin') ||
+        value.contains('transfer') ||
+        value.contains('tarjeta');
+  }
 
   factory PaymentMethod.fromJson(Map<String, dynamic> json) {
     final rawCuentas = _accountList(
@@ -120,6 +138,10 @@ class PaymentMethod {
       codigo: json['codigo']?.toString() ?? '',
       nombre: json['nombre']?.toString() ?? '',
       requiereReferencia: json['requiere_referencia'] == true,
+      requiereComprobante:
+          json['requiere_comprobante'] is bool
+              ? json['requiere_comprobante'] as bool
+              : null,
       cuentas:
           rawCuentas
               .whereType<Map>()
@@ -139,6 +161,7 @@ class PaymentMethod {
       nombre: nombre,
       requiereReferencia: requiereReferencia,
       cuentas: cuentas ?? this.cuentas,
+      requiereComprobante: requiereComprobante,
     );
   }
 
