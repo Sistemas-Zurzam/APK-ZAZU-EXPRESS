@@ -61,11 +61,32 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
     });
   }
 
+  void _handleNotDeliveredRequest(int? orderId) {
+    if (orderId == null) return;
+    ref.read(notDeliveredOrderRequestProvider.notifier).state = null;
+    final items = ref.read(ordersProvider).valueOrNull ?? const [];
+    final index = items.indexWhere((order) => order.id == orderId);
+    if (index == -1) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _showNotDeliveredDialog(
+          context,
+          items[index],
+          closeParentOnSuccess: false,
+        );
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     ref.listen<int?>(
       deliverOrderRequestProvider,
       (_, orderId) => _handleDeliverRequest(orderId),
+    );
+    ref.listen<int?>(
+      notDeliveredOrderRequestProvider,
+      (_, orderId) => _handleNotDeliveredRequest(orderId),
     );
     final orders = ref.watch(ordersProvider);
 
@@ -174,6 +195,8 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
         return items.where((order) => order.isInRoute).toList();
       case 'entregados':
         return items.where((order) => order.isDelivered).toList();
+      case 'no_entregados':
+        return items.where((order) => order.isNotDelivered).toList();
       default:
         return items
             // Asignados: todavía sin recepcionar.
@@ -366,8 +389,8 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
                             },
                             onDeliver:
                                 () => _deliverWithEvidence(context, order),
-                            onReschedule:
-                                () => _showRescheduleDialog(context, order),
+                            onNotDelivered:
+                                () => _showNotDeliveredDialog(context, order),
                             onMap:
                                 order.hasCoordinates
                                     ? () {
@@ -464,6 +487,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
     String? successMessage,
     VoidCallback? onSuccess,
     void Function(String message)? onError,
+    bool closeContextOnSuccess = true,
   }) async {
     if (_runningAction.value != null) return;
     _runningAction.value = actionKey;
@@ -471,7 +495,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
       await action();
       ref.invalidate(ordersProvider);
       if (!context.mounted) return;
-      Navigator.pop(context);
+      if (closeContextOnSuccess) Navigator.pop(context);
       if (successMessage != null) {
         ScaffoldMessenger.of(
           context,
@@ -497,22 +521,19 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
     DeliveryOrder order,
   ) async {
     final draft = _deliveryDrafts.putIfAbsent(order.id, _DeliveryDraft.new);
-    _SelectedPayment? payment;
-    if (order.amountDue > 0) {
-      payment = await _selectPaymentMethod(context, order, draft);
-      if (payment == null || !context.mounted) return;
-    }
+    final payment = await _selectPaymentMethod(context, order, draft);
+    if (payment == null || !context.mounted) return;
 
     // En pago mixto las fotos ya se tomaron en la pantalla de cobro.
     final evidencePaths =
-        payment?.evidencePaths ?? await _takeDeliveryPhotos(context);
+        payment.evidencePaths ?? await _takeDeliveryPhotos(context);
     if (evidencePaths == null || !context.mounted) return;
 
     await _runOrderAction(
       context,
       actionKey: 'primary',
       successMessage:
-          payment?.paymentProofPath != null
+          payment.paymentProofPath != null
               ? 'Pedido entregado con tres evidencias.'
               : 'Pedido entregado con dos evidencias.',
       onError: (message) => _showDeliveryError(context, order, message),
@@ -533,11 +554,12 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
                 order.id,
                 operationId: order.operationId,
                 evidencePaths: evidencePaths,
-                medioPago: payment?.medioPago,
-                yapeAlias: payment?.yapeAlias,
-                montoEfectivo: payment?.montoEfectivo,
-                nroOperacion: payment?.nroOperacion,
-                paymentProofPath: payment?.paymentProofPath,
+                medioPago: payment.medioPago,
+                yapeAlias: payment.yapeAlias,
+                montoEfectivo: payment.montoEfectivo,
+                nroOperacion: payment.nroOperacion,
+                paymentProofPath: payment.paymentProofPath,
+                proveedor: payment.proveedor,
               ),
     );
   }
@@ -642,48 +664,50 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
     return showModalBottomSheet<_SelectedPayment>(
       context: context,
       isScrollControlled: true,
+      useSafeArea: true,
+      isDismissible: false,
+      enableDrag: false,
       backgroundColor: Colors.transparent,
       builder:
-          (context) => DraggableScrollableSheet(
-            initialChildSize: .82,
-            minChildSize: .5,
-            maxChildSize: .95,
-            builder:
-                (context, controller) => SafeArea(
-                  top: false,
-                  child: _PaymentMethodSheet(
-                    order: order,
-                    draft: draft,
-                    scrollController: controller,
-                  ),
-                ),
+          (context) => AnimatedPadding(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOut,
+            padding: EdgeInsets.only(
+              bottom: MediaQuery.viewInsetsOf(context).bottom,
+            ),
+            child: FractionallySizedBox(
+              heightFactor: .94,
+              alignment: Alignment.bottomCenter,
+              child: _PaymentMethodSheet(
+                order: order,
+                draft: draft,
+                scrollController: ScrollController(),
+              ),
+            ),
           ),
     );
   }
 
-  Future<void> _showRescheduleDialog(
+  Future<void> _showNotDeliveredDialog(
     BuildContext context,
-    DeliveryOrder order,
-  ) async {
-    final result = await showDialog<({String reason, String date})>(
+    DeliveryOrder order, {
+    bool closeParentOnSuccess = true,
+  }) async {
+    final result = await showDialog<({String reason, String photoPath})>(
       context: context,
-      builder: (context) => const _RescheduleDialog(),
+      builder: (context) => const _NotDeliveredDialog(),
     );
     if (result == null || !context.mounted) return;
 
     await _runOrderAction(
       context,
-      actionKey: 'reschedule',
-      successMessage: 'Pedido reprogramado.',
+      actionKey: 'not_delivered',
+      successMessage: 'Pedido registrado como no entregado.',
+      closeContextOnSuccess: closeParentOnSuccess,
       action:
           () => ref
               .read(apiProvider)
-              .rescheduleOrder(
-                order.id,
-                result.reason,
-                result.date,
-                operationId: order.operationId,
-              ),
+              .markNotDelivered(order.id, result.reason, result.photoPath),
     );
   }
 
@@ -821,110 +845,6 @@ class _EvidenceSlot extends StatelessWidget {
   }
 }
 
-class _RescheduleDialog extends StatefulWidget {
-  const _RescheduleDialog();
-
-  @override
-  State<_RescheduleDialog> createState() => _RescheduleDialogState();
-}
-
-class _RescheduleDialogState extends State<_RescheduleDialog> {
-  final _reasonController = TextEditingController();
-  DateTime? _date;
-  String? _error;
-
-  @override
-  void dispose() {
-    _reasonController.dispose();
-    super.dispose();
-  }
-
-  String _apiDate(DateTime d) =>
-      '${d.year}-${d.month.toString().padLeft(2, '0')}-'
-      '${d.day.toString().padLeft(2, '0')}';
-
-  String _displayDate(DateTime d) =>
-      '${d.day.toString().padLeft(2, '0')}/'
-      '${d.month.toString().padLeft(2, '0')}/${d.year}';
-
-  Future<void> _pickDate() async {
-    final today = DateUtils.dateOnly(DateTime.now());
-    final picked = await showDatePicker(
-      context: context,
-      initialDate: _date ?? today.add(const Duration(days: 1)),
-      firstDate: today,
-      lastDate: today.add(const Duration(days: 60)),
-      helpText: 'Nueva fecha de entrega',
-      cancelText: 'Cancelar',
-      confirmText: 'Elegir',
-    );
-    if (picked != null) {
-      setState(() {
-        _date = picked;
-        _error = null;
-      });
-    }
-  }
-
-  void _submit() {
-    final reason = _reasonController.text.trim();
-    if (reason.isEmpty || _date == null) {
-      setState(
-        () =>
-            _error =
-                reason.isEmpty
-                    ? 'Escribe el motivo de la reprogramación.'
-                    : 'Elige la nueva fecha de entrega.',
-      );
-      return;
-    }
-    Navigator.pop(context, (reason: reason, date: _apiDate(_date!)));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('Reprogramar pedido'),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          TextField(
-            controller: _reasonController,
-            decoration: const InputDecoration(
-              labelText: 'Motivo',
-              hintText: 'Ej.: cliente no se encuentra',
-            ),
-            textCapitalization: TextCapitalization.sentences,
-            onChanged: (_) {
-              if (_error != null) setState(() => _error = null);
-            },
-          ),
-          const SizedBox(height: 12),
-          OutlinedButton.icon(
-            onPressed: _pickDate,
-            icon: const Icon(Icons.calendar_month_outlined),
-            label: Text(
-              _date == null ? 'Elegir nueva fecha' : _displayDate(_date!),
-            ),
-          ),
-          if (_error != null) ...[
-            const SizedBox(height: 10),
-            Text(_error!, style: const TextStyle(color: AppTheme.danger)),
-          ],
-        ],
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Cancelar'),
-        ),
-        FilledButton(onPressed: _submit, child: const Text('Enviar')),
-      ],
-    );
-  }
-}
-
 class _OrderActions extends StatelessWidget {
   const _OrderActions({
     required this.order,
@@ -932,7 +852,7 @@ class _OrderActions extends StatelessWidget {
     required this.onReception,
     required this.onStartRoute,
     required this.onDeliver,
-    required this.onReschedule,
+    required this.onNotDelivered,
     required this.onMap,
   });
 
@@ -941,12 +861,12 @@ class _OrderActions extends StatelessWidget {
   final VoidCallback onReception;
   final VoidCallback onStartRoute;
   final VoidCallback onDeliver;
-  final VoidCallback onReschedule;
+  final VoidCallback onNotDelivered;
   final VoidCallback? onMap;
 
   @override
   Widget build(BuildContext context) {
-    final isDelivered = order.isDelivered;
+    final isDelivered = order.isClosed;
     final isRoute = order.isInRoute;
     final processing = runningAction != null;
     // Un pedido ya recepcionado (o entregado) no vuelve a mostrar
@@ -955,44 +875,29 @@ class _OrderActions extends StatelessWidget {
 
     return Column(
       children: [
-        Row(
-          children: [
-            if (showPrimary) ...[
-              Expanded(
-                child: ElevatedButton.icon(
-                  onPressed:
-                      processing || isDelivered
-                          ? null
-                          : (isRoute ? onDeliver : onReception),
-                  icon:
-                      runningAction == 'primary'
-                          ? const _ButtonSpinner()
-                          : Icon(
-                            isRoute
-                                ? Icons.check_circle_outline
-                                : Icons.inventory_2_outlined,
-                          ),
-                  label: Text(
-                    runningAction == 'primary'
-                        ? (isRoute ? 'Entregando...' : 'Recepcionando...')
-                        : (isRoute ? 'Entregar' : 'Recepcionar'),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 10),
-            ],
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: processing || isDelivered ? null : onReschedule,
-                icon: const Icon(Icons.event_repeat_outlined),
-                label: const Text('Reprogramar'),
-                style: OutlinedButton.styleFrom(
-                  minimumSize: const Size.fromHeight(52),
-                ),
+        if (showPrimary)
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed:
+                  processing || isDelivered
+                      ? null
+                      : (isRoute ? onDeliver : onReception),
+              icon:
+                  runningAction == 'primary'
+                      ? const _ButtonSpinner()
+                      : Icon(
+                        isRoute
+                            ? Icons.check_circle_outline
+                            : Icons.inventory_2_outlined,
+                      ),
+              label: Text(
+                runningAction == 'primary'
+                    ? (isRoute ? 'Entregando...' : 'Recepcionando...')
+                    : (isRoute ? 'Entregar' : 'Recepcionar'),
               ),
             ),
-          ],
-        ),
+          ),
         const SizedBox(height: 10),
         Row(
           children: [
@@ -1022,7 +927,222 @@ class _OrderActions extends StatelessWidget {
             ),
           ],
         ),
+        if (isRoute && !isDelivered) ...[
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: processing ? null : onNotDelivered,
+              icon:
+                  runningAction == 'not_delivered'
+                      ? const _ButtonSpinner()
+                      : const Icon(Icons.report_problem_outlined),
+              label: Text(
+                runningAction == 'not_delivered'
+                    ? 'Registrando...'
+                    : 'No entregado',
+              ),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppTheme.danger,
+                side: const BorderSide(color: AppTheme.danger),
+                minimumSize: const Size.fromHeight(52),
+              ),
+            ),
+          ),
+        ],
       ],
+    );
+  }
+}
+
+class _NotDeliveredDialog extends StatefulWidget {
+  const _NotDeliveredDialog();
+
+  @override
+  State<_NotDeliveredDialog> createState() => _NotDeliveredDialogState();
+}
+
+class _NotDeliveredDialogState extends State<_NotDeliveredDialog> {
+  final _reasonController = TextEditingController();
+  final _imagePicker = ImagePicker();
+  XFile? _photo;
+  String? _error;
+
+  @override
+  void dispose() {
+    _reasonController.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final reason = _reasonController.text.trim();
+    if (reason.isEmpty || _photo == null) {
+      setState(() {
+        _error =
+            reason.isEmpty
+                ? 'Escribe el motivo de la no entrega.'
+                : 'Toma una foto de evidencia para continuar.';
+      });
+      return;
+    }
+    Navigator.pop(context, (reason: reason, photoPath: _photo!.path));
+  }
+
+  Future<void> _pickPhoto(ImageSource source) async {
+    try {
+      final photo = await _imagePicker.pickImage(
+        source: source,
+        imageQuality: 82,
+        maxWidth: 1600,
+      );
+      if (photo != null && mounted) {
+        setState(() {
+          _photo = photo;
+          if (_error != null && _reasonController.text.trim().isNotEmpty) {
+            _error = null;
+          }
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(
+          () =>
+              _error =
+                  source == ImageSource.camera
+                      ? 'No se pudo abrir la cámara. Revisa los permisos e inténtalo otra vez.'
+                      : 'No se pudo adjuntar la imagen. Inténtalo otra vez.',
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final keyboardInset = MediaQuery.viewInsetsOf(context).bottom;
+    return Dialog(
+      insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxWidth: 440,
+          maxHeight: MediaQuery.sizeOf(context).height - keyboardInset - 40,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Flexible(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(24, 20, 24, 12),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.report_problem_outlined,
+                      color: AppTheme.danger,
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Marcar como no entregado',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Indica el motivo y toma una foto que ayude al área administrativa a coordinar con el cliente.',
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 14),
+                    if (_photo != null) ...[
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: Image.file(
+                          File(_photo!.path),
+                          height: 130,
+                          width: double.infinity,
+                          fit: BoxFit.cover,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                    ],
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: () => _pickPhoto(ImageSource.camera),
+                            icon: const Icon(Icons.camera_alt_outlined),
+                            label: Text(
+                              _photo == null ? 'Tomar foto' : 'Retomar',
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: () => _pickPhoto(ImageSource.gallery),
+                            icon: const Icon(Icons.photo_library_outlined),
+                            label: const Text('Adjuntar'),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _reasonController,
+                      autofocus: true,
+                      maxLines: 3,
+                      minLines: 2,
+                      textCapitalization: TextCapitalization.sentences,
+                      decoration: InputDecoration(
+                        labelText: 'Motivo',
+                        hintText: 'Ej.: cliente ausente o dirección incorrecta',
+                        errorText:
+                            _reasonController.text.trim().isEmpty
+                                ? _error
+                                : null,
+                      ),
+                      onChanged: (_) {
+                        if (_error != null && _photo != null) {
+                          setState(() => _error = null);
+                        }
+                      },
+                    ),
+                    if (_error != null &&
+                        _reasonController.text.trim().isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        _error!,
+                        style: const TextStyle(color: AppTheme.danger),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Cancelar'),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton(
+                    onPressed: _submit,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: AppTheme.danger,
+                    ),
+                    child: const Text('Confirmar'),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -1050,9 +1170,10 @@ class _Summary extends StatelessWidget {
     final received = orders.where((o) => o.isRecepcionado).length;
     final route = orders.where((o) => o.isInRoute).length;
     final delivered = orders.where((o) => o.isDelivered).length;
+    final notDelivered = orders.where((o) => o.isNotDelivered).length;
     final amount = orders.fold<double>(
       0,
-      (sum, order) => sum + (order.isDelivered ? 0 : order.amountDue),
+      (sum, order) => sum + (order.isClosed ? 0 : order.amountDue),
     );
 
     return Column(
@@ -1122,40 +1243,32 @@ class _Summary extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 12),
-        Row(
-          children: [
-            Expanded(
-              child: _Metric(
-                label: 'Asignados',
-                value: assigned,
-                color: AppTheme.purpleLight,
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: _Metric(
-                label: 'Recepcionados',
-                value: received,
-                color: AppTheme.info,
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: _Metric(
-                label: 'En ruta',
-                value: route,
-                color: AppTheme.warning,
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: _Metric(
-                label: 'Entregados',
-                value: delivered,
-                color: AppTheme.success,
-              ),
-            ),
-          ],
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final metricWidth = (constraints.maxWidth - 32) / 5;
+            final metrics = [
+              ('Asignados', assigned, AppTheme.purpleLight),
+              ('Recepcionados', received, AppTheme.info),
+              ('En ruta', route, AppTheme.warning),
+              ('Entregados', delivered, AppTheme.success),
+              ('No entregados', notDelivered, AppTheme.danger),
+            ];
+            return Row(
+              children: [
+                for (var index = 0; index < metrics.length; index++) ...[
+                  if (index > 0) const SizedBox(width: 8),
+                  SizedBox(
+                    width: metricWidth,
+                    child: _Metric(
+                      label: metrics[index].$1,
+                      value: metrics[index].$2,
+                      color: metrics[index].$3,
+                    ),
+                  ),
+                ],
+              ],
+            );
+          },
         ),
       ],
     );
@@ -1175,7 +1288,7 @@ class _Metric extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+      padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 14),
       decoration: BoxDecoration(
         color: AppTheme.surface,
         borderRadius: BorderRadius.circular(18),
@@ -1249,6 +1362,15 @@ class _Filters extends StatelessWidget {
           child: _FilterButton(
             label: 'Entregados',
             value: 'entregados',
+            selected: selected,
+            onSelected: onSelected,
+          ),
+        ),
+        const SizedBox(width: 9),
+        Expanded(
+          child: _FilterButton(
+            label: 'No entregados',
+            value: 'no_entregados',
             selected: selected,
             onSelected: onSelected,
           ),
@@ -1387,6 +1509,7 @@ class _EmptyState extends StatelessWidget {
       'recepcionados' => 'No tienes pedidos recepcionados',
       'ruta' => 'No tienes pedidos en ruta',
       'entregados' => 'Todavía no tienes pedidos entregados',
+      'no_entregados' => 'No tienes pedidos no entregados',
       _ => 'No tienes pedidos por recepcionar',
     };
     return Center(
@@ -1492,6 +1615,7 @@ class _SelectedPayment {
     this.nroOperacion,
     this.paymentProofPath,
     this.evidencePaths,
+    this.proveedor = 'Agencia',
   });
 
   final String? medioPago;
@@ -1503,6 +1627,7 @@ class _SelectedPayment {
   /// Fotos 1 y 2 de la entrega cuando ya se tomaron en la pantalla de cobro
   /// (pago mixto). Si es null, se toman con la cámara después del cobro.
   final List<String>? evidencePaths;
+  final String proveedor;
 }
 
 /// Lo que el motorizado ya cargó en el cobro de un pedido. Sobrevive a cerrar
@@ -1510,6 +1635,8 @@ class _SelectedPayment {
 class _DeliveryDraft {
   final List<XFile?> photos = List<XFile?>.filled(3, null);
   int? methodId;
+  String? paymentConcept;
+  String proveedor = 'Agencia';
   bool isMixed = false;
   String cashText = '';
   String referenceText = '';
@@ -1535,6 +1662,8 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
   late final Future<List<PaymentMethod>> _future;
   PaymentMethod? _selectedMethod;
   PaymentAccount? _selectedAccount;
+  String? _selectedConcept;
+  String _selectedProvider = 'Agencia';
   bool _isMixed = false;
   late final _referenceController = TextEditingController(
     text: widget.draft.referenceText,
@@ -1568,6 +1697,8 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
       ..referenceText = _referenceController.text
       ..cashText = _cashController.text
       ..methodId = _selectedMethod?.id
+      ..paymentConcept = _selectedConcept
+      ..proveedor = _selectedProvider
       ..isMixed = _isMixed;
     _referenceController.dispose();
     _cashController.dispose();
@@ -1615,7 +1746,22 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
         value.contains('transferencia');
   }
 
+  PaymentMethod? _preferredMixedMethod(Iterable<PaymentMethod> methods) {
+    final digital = methods.where(_isDigitalMethod).toList();
+    if (digital.isEmpty) return null;
+    for (final method in digital) {
+      if (method.id == ApiService.qrMethodId ||
+          '${method.codigo} ${method.nombre}'.toLowerCase().contains('qr')) {
+        return method;
+      }
+    }
+    return digital.first;
+  }
+
   bool get _canContinue {
+    if (_selectedConcept != null) {
+      return _photos[0] != null && _photos[1] != null;
+    }
     final method = _selectedMethod;
     if (method == null) return false;
     if (method.cuentas.isNotEmpty && _selectedAccount == null) return false;
@@ -1632,6 +1778,17 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
   }
 
   void _confirm() {
+    if (_selectedConcept != null) {
+      Navigator.pop(
+        context,
+        _SelectedPayment(
+          medioPago: _selectedConcept,
+          evidencePaths: [_photos[0]!.path, _photos[1]!.path],
+          proveedor: _selectedProvider,
+        ),
+      );
+      return;
+    }
     final method = _selectedMethod!;
     final cashAmount = _isCash || _isMixed ? _cashAmount : null;
     Navigator.pop(
@@ -1648,6 +1805,7 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
             _requiresReference ? _referenceController.text.trim() : null,
         paymentProofPath: _photos[2]?.path,
         evidencePaths: [_photos[0]!.path, _photos[1]!.path],
+        proveedor: _selectedProvider,
       ),
     );
   }
@@ -1696,20 +1854,46 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
 
   bool _draftRestored = false;
 
-  /// Al reintentar una entrega, vuelve a marcar el medio elegido la vez
-  /// anterior (las fotos y los montos ya vienen del borrador).
+  /// Conserva la selección del borrador; si es un cobro nuevo, inicia en pago
+  /// mixto con el primer medio digital disponible.
   void _restoreDraftMethod(List<PaymentMethod> methods) {
     if (_draftRestored) return;
     _draftRestored = true;
-    final id = widget.draft.methodId;
-    if (id == null || _selectedMethod != null) return;
-    for (final m in methods) {
-      if (m.id != id) continue;
-      _selectedMethod = m;
-      _isMixed = widget.draft.isMixed;
-      _selectedAccount = m.cuentas.isEmpty ? null : m.cuentas.first;
+    _selectedProvider = widget.draft.proveedor;
+    final concept = widget.draft.paymentConcept;
+    if (concept != null) {
+      _selectedConcept = concept;
       return;
     }
+    final id = widget.draft.methodId;
+    if (id != null && _selectedMethod == null) {
+      for (final m in methods) {
+        if (m.id != id) continue;
+        _selectedMethod = m;
+        _isMixed = widget.draft.isMixed;
+        _selectedAccount = m.cuentas.isEmpty ? null : m.cuentas.first;
+        return;
+      }
+    }
+
+    if (widget.order.amountDue <= 0) return;
+    final defaultMethod = _preferredMixedMethod(methods);
+    if (defaultMethod == null) return;
+    _isMixed = true;
+    _selectedMethod = defaultMethod;
+    _selectedAccount =
+        defaultMethod.cuentas.isEmpty ? null : defaultMethod.cuentas.first;
+  }
+
+  void _selectConcept(String concept) {
+    setState(() {
+      _selectedConcept = concept;
+      _selectedMethod = null;
+      _selectedAccount = null;
+      _isMixed = false;
+      _referenceController.clear();
+      _cashController.clear();
+    });
   }
 
   void _skip() => Navigator.pop(context, const _SelectedPayment());
@@ -1780,6 +1964,7 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
     _restoreDraftMethod(methods);
     final method = _selectedMethod;
     final mixedMethods = methods.where(_isDigitalMethod).toList();
+    final defaultMixedMethod = _preferredMixedMethod(mixedMethods);
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -1807,26 +1992,72 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
                 style: const TextStyle(color: AppTheme.textMuted),
               ),
               const SizedBox(height: 18),
-              if (mixedMethods.isNotEmpty)
+              const Text(
+                '¿A quién pagará el cliente?',
+                style: TextStyle(fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                children: [
+                  ChoiceChip(
+                    label: const Text('Agencia'),
+                    selected: _selectedProvider == 'Agencia',
+                    onSelected:
+                        (_) => setState(() => _selectedProvider = 'Agencia'),
+                  ),
+                  ChoiceChip(
+                    label: const Text('Proveedor'),
+                    selected: _selectedProvider == 'Proveedor',
+                    onSelected:
+                        (_) => setState(() => _selectedProvider = 'Proveedor'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              if (widget.order.amountDue <= 0) ...[
+                _PaymentConceptTile(
+                  title: 'Cambio',
+                  subtitle: 'Entrega por cambio de producto',
+                  selected: _selectedConcept == 'Cambio',
+                  onTap: () => _selectConcept('Cambio'),
+                ),
+                _PaymentConceptTile(
+                  title: 'Pago completo',
+                  subtitle: 'El pedido ya fue pagado',
+                  selected: _selectedConcept == 'Pago Completo',
+                  onTap: () => _selectConcept('Pago Completo'),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'O selecciona el medio de pago',
+                  style: TextStyle(fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 8),
+              ],
+              if (widget.order.amountDue > 0 && mixedMethods.isNotEmpty)
                 _MixedPaymentTile(
                   selected: _isMixed,
                   onTap:
                       () => setState(() {
+                        _selectedConcept = null;
                         _isMixed = true;
-                        _selectedMethod = mixedMethods.first;
+                        _selectedMethod = defaultMixedMethod;
                         _selectedAccount =
-                            mixedMethods.first.cuentas.isEmpty
+                            defaultMixedMethod == null ||
+                                    defaultMixedMethod.cuentas.isEmpty
                                 ? null
-                                : mixedMethods.first.cuentas.first;
+                                : defaultMixedMethod.cuentas.first;
                         _referenceController.clear();
                       }),
                 ),
               ...methods.map(
                 (m) => _MethodTile(
                   method: m,
-                  selected: method?.id == m.id,
+                  selected: !_isMixed && method?.id == m.id,
                   onTap:
                       () => setState(() {
+                        _selectedConcept = null;
                         _selectedMethod = m;
                         _isMixed = false;
                         _selectedAccount =
@@ -1959,7 +2190,7 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
                   ),
                 ],
               ],
-              if (method != null) ...[
+              if (method != null || _selectedConcept != null) ...[
                 const SizedBox(height: 16),
                 const Text(
                   'Fotos de evidencia',
@@ -2030,6 +2261,72 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _PaymentConceptTile extends StatelessWidget {
+  const _PaymentConceptTile({
+    required this.title,
+    required this.subtitle,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String title;
+  final String subtitle;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      decoration: BoxDecoration(
+        color:
+            selected
+                ? AppTheme.purple.withValues(alpha: .22)
+                : AppTheme.surface2,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: selected ? AppTheme.purpleLight : Colors.transparent,
+          width: 1.4,
+        ),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(18),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Row(
+            children: [
+              Icon(
+                selected ? Icons.radio_button_checked : Icons.radio_button_off,
+                color: selected ? AppTheme.purpleLight : AppTheme.textMuted,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                    Text(
+                      subtitle,
+                      style: const TextStyle(
+                        color: AppTheme.textMuted,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

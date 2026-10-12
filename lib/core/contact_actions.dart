@@ -19,6 +19,38 @@ String sellerName(String reference) {
   return seller.isEmpty ? 'ZAZU' : seller;
 }
 
+/// Pedido de posventa (cambio de un pedido anterior): "ATC/000018".
+bool isAtcOrder(DeliveryOrder order) =>
+    sellerName(order.externalRef).toUpperCase() == 'ATC';
+
+/// Marca para los mensajes al cliente: la que manda el servidor, o el prefijo
+/// de la nota de venta. En un ATC sin marca devuelve null, porque "ATC" no
+/// le dice nada al cliente.
+String? orderBrand(DeliveryOrder order) {
+  final brand = order.brand?.trim();
+  if (brand != null && brand.isNotEmpty) return _titleCase(brand);
+  return isAtcOrder(order) ? null : sellerName(order.externalRef);
+}
+
+/// Cómo se nombra el pedido ante el cliente. Un ATC no muestra su código:
+/// "el cambio de su pedido anterior de Bravos".
+String orderPhrase(DeliveryOrder order) {
+  final brand = orderBrand(order);
+  if (isAtcOrder(order)) {
+    return brand == null
+        ? 'el cambio de su pedido anterior'
+        : 'el cambio de su pedido anterior de $brand';
+  }
+  return 'su pedido de $brand (${order.externalRef})';
+}
+
+/// "BOX PRIME" → "Box Prime".
+String _titleCase(String text) => text
+    .toLowerCase()
+    .split(RegExp(r'\s+'))
+    .map((w) => w.isEmpty ? w : '${w[0].toUpperCase()}${w.substring(1)}')
+    .join(' ');
+
 Future<void> callCustomer(BuildContext context, String? phone) async {
   if (phone == null || phone.trim().isEmpty) return;
   final uri = Uri(scheme: 'tel', path: phone.replaceAll(RegExp(r'\s'), ''));

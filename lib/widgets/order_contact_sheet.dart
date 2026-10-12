@@ -8,31 +8,40 @@ import '../models/order.dart';
 /// Mensajes predefinidos para el cliente. Se abren en WhatsApp ya escritos;
 /// el motorizado puede editarlos antes de enviar.
 List<({String title, String text})> _templates(DeliveryOrder order) {
-  final name = order.customerName.split(' ').first;
-  final seller = sellerName(order.externalRef);
+  final name = order.customerName.trim();
+  final brand = orderBrand(order);
+  final phrase = orderPhrase(order);
   final amount =
       order.amountDue > 0
           ? ' El monto a cobrar es ${peruvianCurrency.format(order.amountDue)}.'
           : '';
+  // Un ATC es el cambio de un pedido anterior: se nombra por su marca, sin
+  // el código "ATC/...", que el cliente no reconoce.
+  final delivery =
+      isAtcOrder(order)
+          ? 'Le traigo $phrase'
+          : 'Tengo una entrega para usted de parte de la empresa $brand '
+              '(${order.externalRef})';
   return [
     (
       title: 'Voy en camino',
       text:
-          'Hola $name, le saluda su motorizado de ZAZU Express. Estoy en '
-          'camino con su pedido de $seller (${order.externalRef}).$amount',
+          'Hola $name, soy el motorizado de ZAZU Express 🛵💜. '
+          '$delivery.$amount ¿Me confirma si se encuentra en su '
+          'ubicación de entrega? Si puede, compártame su ubicación actual por '
+          'WhatsApp para llegar con facilidad 📍📦.',
     ),
     (
       title: 'Ya llegué',
       text:
-          'Hola $name, ya me encuentro en ${order.address} con su pedido de '
-          '$seller (${order.externalRef}).$amount',
+          'Hola $name, ya me encuentro en ${order.address} con '
+          '$phrase.$amount',
     ),
     (
       title: 'No lo encuentro',
       text:
-          'Hola $name, estoy en la dirección de entrega de su pedido de '
-          '$seller (${order.externalRef}) pero no logro ubicarlo. ¿Podría '
-          'indicarme una referencia?',
+          'Hola $name, estoy en la dirección de entrega de $phrase pero no '
+          'logro ubicarlo. ¿Podría indicarme una referencia?',
     ),
   ];
 }
@@ -48,14 +57,17 @@ Future<void> showOrderContactSheet(
   VoidCallback? onNavigate,
   Future<String?> Function()? onStartRoute,
   VoidCallback? onDeliver,
+  VoidCallback? onNotDelivered,
 }) {
   final hasPhone = whatsAppPhone(order.phone) != null;
   // Siempre visible (salvo entregado); solo se habilita En ruta, que es lo
   // que exige el servidor para registrar la entrega.
-  final showDeliver = onDeliver != null && !order.isDelivered;
+  final showDeliver = onDeliver != null && !order.isClosed;
   final canDeliver = showDeliver && order.isInRoute;
+  final canMarkNotDelivered =
+      onNotDelivered != null && order.isInRoute && !order.isClosed;
   final canStartRoute =
-      onStartRoute != null && !order.isInRoute && !order.isDelivered;
+      onStartRoute != null && !order.isInRoute && !order.isClosed;
   var startingRoute = false;
 
   return showModalBottomSheet<void>(
@@ -259,6 +271,22 @@ Future<void> showOrderContactSheet(
                               ),
                             ),
                           ),
+                      ],
+                      if (canMarkNotDelivered) ...[
+                        const SizedBox(height: 10),
+                        OutlinedButton.icon(
+                          onPressed: () {
+                            Navigator.pop(sheetContext);
+                            onNotDelivered();
+                          },
+                          icon: const Icon(Icons.report_problem_outlined),
+                          label: const Text('No entregado'),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: AppTheme.danger,
+                            side: const BorderSide(color: AppTheme.danger),
+                            minimumSize: const Size.fromHeight(50),
+                          ),
+                        ),
                       ],
                       if (canStartRoute) ...[
                         const SizedBox(height: 10),

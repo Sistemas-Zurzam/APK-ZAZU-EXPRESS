@@ -97,7 +97,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
       // trazado de /motorizado/mi-ruta tampoco los incluye).
       routeOrders =
           orders
-              .where((order) => order.hasCoordinates && !order.isDelivered)
+              .where((order) => order.hasCoordinates && !order.isClosed)
               .toList();
       routeOrders.sort(
         (left, right) => (left.deliverySequence ?? 1 << 30).compareTo(
@@ -138,7 +138,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
 
   /// Paradas vigentes (id + estado): si cambia, el mapa está desactualizado.
   static String _activeStopsKey(List<DeliveryOrder> orders) => (orders
-          .where((o) => o.hasCoordinates && !o.isDelivered)
+          .where((o) => o.hasCoordinates && !o.isClosed)
           .map((o) => '${o.id}:${o.status}')
           .toList()
         ..sort())
@@ -178,6 +178,10 @@ class _MapScreenState extends ConsumerState<MapScreen> {
         onStartRoute: () => _startRoute(order),
         onDeliver: () {
           ref.read(deliverOrderRequestProvider.notifier).state = order.id;
+          ref.read(homeTabIndexProvider.notifier).state = 0;
+        },
+        onNotDelivered: () {
+          ref.read(notDeliveredOrderRequestProvider.notifier).state = order.id;
           ref.read(homeTabIndexProvider.notifier).state = 0;
         },
       );

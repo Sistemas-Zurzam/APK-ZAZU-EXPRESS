@@ -179,8 +179,11 @@ class OrderCard extends StatelessWidget {
                               context,
                               order,
                               text:
-                                  'Hola, le escribo respecto a su pedido '
-                                  '${sellerName(order.externalRef)}.',
+                                  isAtcOrder(order)
+                                      ? 'Hola, le escribo respecto a '
+                                          '${orderPhrase(order)}.'
+                                      : 'Hola, le escribo respecto a su pedido '
+                                          '${orderBrand(order)}.',
                             ),
                     icon: const Icon(Icons.chat_outlined, size: 18),
                     label: const Text('WhatsApp'),
@@ -204,6 +207,12 @@ class OrderCard extends StatelessWidget {
 
   _StatusStyle _statusStyle(String raw) {
     final value = raw.toLowerCase().replaceAll('_', ' ');
+    if (value.contains('no entreg') ||
+        value.contains('cancel') ||
+        value.contains('fall') ||
+        value.contains('devol')) {
+      return const _StatusStyle('No entregado', AppTheme.danger);
+    }
     if (value.contains('entreg') ||
         value.contains('finaliz') ||
         value.contains('complet')) {
@@ -214,8 +223,6 @@ class OrderCard extends StatelessWidget {
     if (value.contains('recepcion')) {
       return const _StatusStyle('Recepcionado', AppTheme.info);
     }
-    if (value.contains('cancel') || value.contains('fall'))
-      return const _StatusStyle('Incidencia', AppTheme.danger);
     return const _StatusStyle('Asignado', AppTheme.purpleLight);
   }
 }

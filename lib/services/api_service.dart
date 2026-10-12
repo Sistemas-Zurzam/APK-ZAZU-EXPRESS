@@ -215,6 +215,7 @@ class ApiService {
     double? montoEfectivo,
     String? nroOperacion,
     String? paymentProofPath,
+    String proveedor = 'Agencia',
   }) async {
     if (evidencePaths.length != 2) {
       throw ArgumentError.value(
@@ -250,6 +251,7 @@ class ApiService {
             ),
             if (medioPago != null && medioPago.isNotEmpty)
               'medio_pago': medioPago,
+            'proveedor': proveedor,
             if (yapeAlias != null && yapeAlias.isNotEmpty)
               'yape_alias': yapeAlias,
             if (montoEfectivo != null) 'monto_efectivo': montoEfectivo,
@@ -280,6 +282,26 @@ class ApiService {
         'motivo': reason,
         'nueva_fecha': newDate,
       },
+    );
+  }
+
+  Future<void> markNotDelivered(
+    int orderId,
+    String reason,
+    String photoPath,
+  ) async {
+    final photoName = photoPath.split(RegExp(r'[\\/]')).last;
+    await _dio.post(
+      '/motorizado/no-entregado',
+      options: Options(
+        sendTimeout: const Duration(seconds: 120),
+        receiveTimeout: const Duration(seconds: 120),
+      ),
+      data: FormData.fromMap({
+        'pedido_id': orderId,
+        'motivo': reason,
+        'foto': MultipartFile.fromFileSync(photoPath, filename: photoName),
+      }),
     );
   }
 

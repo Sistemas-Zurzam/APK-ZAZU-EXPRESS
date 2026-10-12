@@ -152,6 +152,10 @@ final focusedOrderIdProvider = StateProvider<int?>((ref) => null);
 /// el cobro (ahí vive el flujo de fotos y medio de pago).
 final deliverOrderRequestProvider = StateProvider<int?>((ref) => null);
 
+/// Pedido que el mapa pidio marcar como no entregado. La pantalla de pedidos
+/// abre el detalle y solicita el motivo antes de enviarlo al servidor.
+final notDeliveredOrderRequestProvider = StateProvider<int?>((ref) => null);
+
 final _locationTrackingServiceProvider = Provider<LocationTrackingService>((
   ref,
 ) {

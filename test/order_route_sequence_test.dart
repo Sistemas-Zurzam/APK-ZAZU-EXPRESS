@@ -21,8 +21,22 @@ void main() {
 
   test('reconoce estados finales usados por el backend', () {
     expect(DeliveryOrder.fromJson({'estado': 'Entregado'}).isDelivered, isTrue);
-    expect(DeliveryOrder.fromJson({'estado': 'Finalizado'}).isDelivered, isTrue);
-    expect(DeliveryOrder.fromJson({'estado': 'Completado'}).isDelivered, isTrue);
+    expect(
+      DeliveryOrder.fromJson({'estado': 'Finalizado'}).isDelivered,
+      isTrue,
+    );
+    expect(
+      DeliveryOrder.fromJson({'estado': 'Completado'}).isDelivered,
+      isTrue,
+    );
     expect(DeliveryOrder.fromJson({'estado': 'En ruta'}).isDelivered, isFalse);
+  });
+
+  test('no confunde no entregado con entregado', () {
+    final order = DeliveryOrder.fromJson({'estado': 'No entregado'});
+
+    expect(order.isNotDelivered, isTrue);
+    expect(order.isDelivered, isFalse);
+    expect(order.isClosed, isTrue);
   });
 }

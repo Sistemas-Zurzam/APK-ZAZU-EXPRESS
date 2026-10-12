@@ -15,6 +15,9 @@ class DeliveryOrder {
     this.routeGroup,
     this.backpackSequence,
     this.observations,
+    this.brand,
+    this.paymentMethod,
+    this.cashAmount,
     this.rawJson = const {},
   });
 
@@ -33,15 +36,35 @@ class DeliveryOrder {
   final String? routeGroup;
   final int? backpackSequence;
   final String? observations;
+
+  /// Marca del pedido (Overshark, Bravos, Box Prime). Los pedidos de posventa
+  /// ("ATC/000018") no la llevan en [externalRef].
+  final String? brand;
+
+  /// Cómo se cobró al entregar (EFECTIVO, YAPE, Cambio...) y la parte en
+  /// efectivo; con esto se calcula lo que el motorizado rinde en caja.
+  final String? paymentMethod;
+  final double? cashAmount;
   final Map<String, dynamic> rawJson;
 
   bool get hasCoordinates => latitude != null && longitude != null;
   bool get isDelivered {
-    final value = status.toLowerCase();
+    final value = status.toLowerCase().replaceAll('_', ' ');
+    if (isNotDelivered) return false;
     return value.contains('entreg') ||
         value.contains('finaliz') ||
         value.contains('complet');
   }
+
+  bool get isNotDelivered {
+    final value = status.toLowerCase().replaceAll('_', ' ');
+    return value.contains('no entreg') ||
+        value.contains('cancel') ||
+        value.contains('fall') ||
+        value.contains('devol');
+  }
+
+  bool get isClosed => isDelivered || isNotDelivered;
 
   /// Ya pasó por la recepción (recepcionado, en ruta o entregado): no debe
   /// recepcionarse otra vez.
@@ -52,7 +75,7 @@ class DeliveryOrder {
       !isDelivered;
 
   bool get isReceived =>
-      status.toLowerCase().contains('recepcionad') || isInRoute || isDelivered;
+      status.toLowerCase().contains('recepcionad') || isInRoute || isClosed;
 
   bool get isInRoute {
     final value = status.toLowerCase();
@@ -75,6 +98,9 @@ class DeliveryOrder {
     routeGroup: routeGroup,
     backpackSequence: backpackSequence,
     observations: observations,
+    brand: brand,
+    paymentMethod: paymentMethod,
+    cashAmount: cashAmount,
     rawJson: rawJson,
   );
 
@@ -139,21 +165,7 @@ class DeliveryOrder {
         ]),
         'Sin dirección',
       ),
-      amountDue: _findMoney(json, [
-        'monto_pendiente',
-        'monto_cobrar',
-        'monto_por_cobrar',
-        'monto_a_cobrar',
-        'monto_total',
-        'importe_pendiente',
-        'saldo_pendiente',
-        'saldo_a_cobrar',
-        'cuenta_cliente',
-        'saldo',
-        'total_pendiente',
-        'total_cobrar',
-        'total',
-      ]),
+      amountDue: _parseMoney(_findValue(json, ['cuenta_cliente'])),
       status:
           _stringOrDefault(
             _findValue(json, ['estado_operacion', 'estado_nombre', 'estado']),
@@ -209,6 +221,12 @@ class DeliveryOrder {
       observations: _stringOrNull(
         _findValue(json, ['observaciones', 'observacion', 'nota']),
       ),
+      brand: _stringOrNull(json['marca']),
+      paymentMethod: _stringOrNull(json['medio_pago']),
+      cashAmount:
+          json['monto_efectivo'] == null
+              ? null
+              : _parseMoney(json['monto_efectivo']),
       rawJson: json,
     );
   }
