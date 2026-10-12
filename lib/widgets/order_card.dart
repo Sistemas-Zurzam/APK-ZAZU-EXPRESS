@@ -204,6 +204,9 @@ class OrderCard extends StatelessWidget {
 
   _StatusStyle _statusStyle(String raw) {
     final value = raw.toLowerCase().replaceAll('_', ' ');
+    if (value.contains('no entreg') || value.contains('devuelt')) {
+      return const _StatusStyle('No entregado', AppTheme.danger);
+    }
     if (value.contains('entreg') ||
         value.contains('finaliz') ||
         value.contains('complet')) {

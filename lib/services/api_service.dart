@@ -332,6 +332,29 @@ class ApiService {
     );
   }
 
+  Future<void> markNotDelivered(
+    int orderId, {
+    required String reason,
+    required String evidencePath,
+  }) async {
+    final evidenceName = evidencePath.split(RegExp(r'[\\/]')).last;
+    await _dio.post(
+      '/motorizado/no-entregado',
+      options: Options(
+        sendTimeout: const Duration(seconds: 120),
+        receiveTimeout: const Duration(seconds: 120),
+      ),
+      data: FormData.fromMap({
+        'pedido_id': orderId,
+        'motivo': reason.trim(),
+        'foto': MultipartFile.fromFileSync(
+          evidencePath,
+          filename: evidenceName,
+        ),
+      }),
+    );
+  }
+
   Future<void> registerDriver(Map<String, dynamic> data) async {
     try {
       await _dio.post('/apk/register', data: data);

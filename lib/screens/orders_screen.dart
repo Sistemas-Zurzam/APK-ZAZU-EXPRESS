@@ -369,6 +369,8 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
                             },
                             onDeliver:
                                 () => _deliverWithEvidence(context, order),
+                            onNoDelivery:
+                                () => _showNoDeliveryDialog(context, order),
                             onReschedule:
                                 () => _showRescheduleDialog(context, order),
                             onMap:
@@ -690,6 +692,31 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
     );
   }
 
+  Future<void> _showNoDeliveryDialog(
+    BuildContext context,
+    DeliveryOrder order,
+  ) async {
+    final result = await showDialog<_NoDeliveryReport>(
+      context: context,
+      builder: (context) => const _NoDeliveryDialog(),
+    );
+    if (result == null || !context.mounted) return;
+
+    await _runOrderAction(
+      context,
+      actionKey: 'no_delivery',
+      successMessage: 'Pedido registrado como no entregado.',
+      action:
+          () => ref
+              .read(apiProvider)
+              .markNotDelivered(
+                order.id,
+                reason: result.reason,
+                evidencePath: result.evidence.path,
+              ),
+    );
+  }
+
   String _actionError(Object error) {
     if (error is DioException) {
       final serverMessage = _serverMessage(error.response?.data);
@@ -822,6 +849,7 @@ class _EvidenceSlot extends StatelessWidget {
       ),
     );
   }
+
 }
 
 class _RescheduleDialog extends StatefulWidget {
@@ -928,6 +956,176 @@ class _RescheduleDialogState extends State<_RescheduleDialog> {
   }
 }
 
+class _NoDeliveryReport {
+  const _NoDeliveryReport({required this.reason, required this.evidence});
+
+  final String reason;
+  final XFile evidence;
+}
+
+class _NoDeliveryDialog extends StatefulWidget {
+  const _NoDeliveryDialog();
+
+  @override
+  State<_NoDeliveryDialog> createState() => _NoDeliveryDialogState();
+}
+
+class _NoDeliveryDialogState extends State<_NoDeliveryDialog> {
+  final _reasonController = TextEditingController();
+  XFile? _evidence;
+  String? _error;
+
+  @override
+  void dispose() {
+    _reasonController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickEvidence() async {
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      showDragHandle: true,
+      backgroundColor: AppTheme.surface,
+      builder:
+          (context) => SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(20, 0, 20, 8),
+                  child: Text(
+                    'Evidencia de la visita',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                  ),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.camera_alt_outlined),
+                  title: const Text('Tomar una foto'),
+                  onTap: () => Navigator.pop(context, ImageSource.camera),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.image_outlined),
+                  title: const Text('Adjuntar foto o captura'),
+                  onTap: () => Navigator.pop(context, ImageSource.gallery),
+                ),
+                const SizedBox(height: 8),
+              ],
+            ),
+          ),
+    );
+    if (source == null) return;
+
+    final image = await ImagePicker().pickImage(
+      source: source,
+      imageQuality: 78,
+      maxWidth: 1600,
+    );
+    if (image != null && mounted) {
+      setState(() {
+        _evidence = image;
+        _error = null;
+      });
+    }
+  }
+
+  void _submit() {
+    final reason = _reasonController.text.trim();
+    if (reason.isEmpty || _evidence == null) {
+      setState(() {
+        _error = reason.isEmpty
+            ? 'Escribe el motivo de la entrega fallida.'
+            : 'Adjunta una foto o captura como evidencia.';
+      });
+      return;
+    }
+    Navigator.pop(
+      context,
+      _NoDeliveryReport(reason: reason, evidence: _evidence!),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Marcar como no entregado'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              'Indica el motivo y adjunta una evidencia obligatoria. Puedes '
+              'tomar una foto o elegir una imagen o captura de tu galería.',
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: _reasonController,
+              maxLength: 500,
+              maxLines: 3,
+              decoration: const InputDecoration(
+                labelText: 'Motivo',
+                hintText: 'Ej.: cliente ausente',
+                alignLabelWithHint: true,
+              ),
+              textCapitalization: TextCapitalization.sentences,
+              onChanged: (_) {
+                if (_error != null) setState(() => _error = null);
+              },
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: _pickEvidence,
+              icon: Icon(
+                _evidence == null
+                    ? Icons.add_a_photo_outlined
+                    : Icons.change_circle_outlined,
+              ),
+              label: Text(
+                _evidence == null ? 'Adjuntar evidencia *' : 'Cambiar evidencia',
+              ),
+              style: OutlinedButton.styleFrom(
+                minimumSize: const Size.fromHeight(50),
+              ),
+            ),
+            if (_evidence != null) ...[
+              const SizedBox(height: 10),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(14),
+                child: Image.file(
+                  File(_evidence!.path),
+                  height: 150,
+                  fit: BoxFit.cover,
+                ),
+              ),
+              TextButton.icon(
+                onPressed: () => setState(() => _evidence = null),
+                icon: const Icon(Icons.delete_outline),
+                label: const Text('Quitar evidencia'),
+              ),
+            ],
+            if (_error != null) ...[
+              const SizedBox(height: 8),
+              Text(_error!, style: const TextStyle(color: AppTheme.danger)),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton.icon(
+          onPressed: _submit,
+          icon: const Icon(Icons.report_gmailerrorred_outlined),
+          label: const Text('Registrar'),
+          style: FilledButton.styleFrom(backgroundColor: AppTheme.danger),
+        ),
+      ],
+    );
+  }
+}
+
 class _OrderActions extends StatelessWidget {
   const _OrderActions({
     required this.order,
@@ -935,6 +1133,7 @@ class _OrderActions extends StatelessWidget {
     required this.onReception,
     required this.onStartRoute,
     required this.onDeliver,
+    required this.onNoDelivery,
     required this.onReschedule,
     required this.onMap,
   });
@@ -944,6 +1143,7 @@ class _OrderActions extends StatelessWidget {
   final VoidCallback onReception;
   final VoidCallback onStartRoute;
   final VoidCallback onDeliver;
+  final VoidCallback onNoDelivery;
   final VoidCallback onReschedule;
   final VoidCallback? onMap;
 
@@ -996,6 +1196,29 @@ class _OrderActions extends StatelessWidget {
             ),
           ],
         ),
+        if (isRoute) ...[
+          const SizedBox(height: 10),
+          OutlinedButton.icon(
+            onPressed: processing || isDelivered ? null : onNoDelivery,
+            icon:
+                runningAction == 'no_delivery'
+                    ? const _ButtonSpinner()
+                    : const Icon(Icons.report_problem_outlined),
+            label: Text(
+              runningAction == 'no_delivery'
+                  ? 'Registrando...'
+                  : 'No entregado',
+            ),
+            style: OutlinedButton.styleFrom(
+              minimumSize: const Size.fromHeight(50),
+              foregroundColor: AppTheme.danger,
+              side: const BorderSide(color: AppTheme.danger),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(18),
+              ),
+            ),
+          ),
+        ],
         const SizedBox(height: 10),
         Row(
           children: [

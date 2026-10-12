@@ -36,8 +36,16 @@ class DeliveryOrder {
   final Map<String, dynamic> rawJson;
 
   bool get hasCoordinates => latitude != null && longitude != null;
+  bool get isNotDelivered {
+    final value = status.toLowerCase();
+    return value.contains('no_entreg') || value.contains('no entreg');
+  }
+
   bool get isDelivered {
     final value = status.toLowerCase();
+    if (isNotDelivered || value.contains('devuelt')) {
+      return false;
+    }
     return value.contains('entreg') ||
         value.contains('finaliz') ||
         value.contains('complet');
@@ -52,7 +60,10 @@ class DeliveryOrder {
       !isDelivered;
 
   bool get isReceived =>
-      status.toLowerCase().contains('recepcionad') || isInRoute || isDelivered;
+      status.toLowerCase().contains('recepcionad') ||
+      isInRoute ||
+      isDelivered ||
+      isNotDelivered;
 
   bool get isInRoute {
     final value = status.toLowerCase();
