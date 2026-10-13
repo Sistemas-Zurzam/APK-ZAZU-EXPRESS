@@ -48,13 +48,14 @@ class EarningsScreen extends ConsumerWidget {
                   value: summary.collected,
                   bold: true,
                 ),
-                _Line(label: 'Efectivo', value: summary.cash),
-                _Line(label: 'Yape / QR / transferencia', value: summary.digital),
-                if (summary.unregistered > 0)
+                for (final entry in summary.byMethod.entries)
                   _Line(
-                    label: 'Sin medio de pago registrado',
-                    value: summary.unregistered,
-                    color: AppTheme.warning,
+                    label: entry.key,
+                    value: entry.value,
+                    color:
+                        entry.key == 'Sin medio de pago registrado'
+                            ? AppTheme.warning
+                            : null,
                   ),
               ],
             ),

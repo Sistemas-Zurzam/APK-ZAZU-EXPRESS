@@ -2081,8 +2081,8 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
 
   bool _draftRestored = false;
 
-  /// Conserva la selección del borrador; si es un cobro nuevo, inicia en pago
-  /// mixto con el primer medio digital disponible.
+  /// Conserva la selección del borrador; si es nuevo, preselecciona Ligo Pay
+  /// cuando está disponible y deja pago mixto como alternativa.
   void _restoreDraftMethod(List<PaymentMethod> methods) {
     if (_draftRestored) return;
     _draftRestored = true;
@@ -2110,7 +2110,24 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
       }
     }
 
+    PaymentMethod? ligoMethod;
+    for (final method in methods) {
+      if (method.id == ApiService.ligoMethodId) {
+        ligoMethod = method;
+        break;
+      }
+    }
+    if (ligoMethod != null) {
+      _selectedMethod = ligoMethod;
+      _selectedAccount = null;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _isLigo) _startLigo();
+      });
+      return;
+    }
+
     if (widget.order.amountDue <= 0) return;
+
     final defaultMethod = _preferredMixedMethod(methods);
     if (defaultMethod == null) return;
     _isMixed = true;

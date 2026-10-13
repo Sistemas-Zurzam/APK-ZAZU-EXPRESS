@@ -18,6 +18,7 @@ class DeliveryOrder {
     this.brand,
     this.paymentMethod,
     this.cashAmount,
+    this.ligoPaidAmount = 0,
     this.rawJson = const {},
   });
 
@@ -45,6 +46,9 @@ class DeliveryOrder {
   /// efectivo; con esto se calcula lo que el motorizado rinde en caja.
   final String? paymentMethod;
   final double? cashAmount;
+
+  /// Total de pagos confirmados por Ligo Pay vinculados al ticket.
+  final double ligoPaidAmount;
   final Map<String, dynamic> rawJson;
 
   bool get hasCoordinates => latitude != null && longitude != null;
@@ -103,6 +107,7 @@ class DeliveryOrder {
     brand: brand,
     paymentMethod: paymentMethod,
     cashAmount: cashAmount,
+    ligoPaidAmount: ligoPaidAmount,
     rawJson: rawJson,
   );
 
@@ -229,6 +234,7 @@ class DeliveryOrder {
           json['monto_efectivo'] == null
               ? null
               : _parseMoney(json['monto_efectivo']),
+      ligoPaidAmount: _parseMoney(json['ligo_pagado']),
       rawJson: json,
     );
   }
