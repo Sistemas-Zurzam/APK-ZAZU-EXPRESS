@@ -185,15 +185,9 @@ class ApiService {
     return LigoQr.fromJson(_asMap(response.data));
   }
 
-  static bool _isWalletMethod(PaymentMethod method) {
-    final text = '${method.codigo} ${method.nombre}'.toLowerCase();
-    return text.contains('yape') || text.contains('plin');
-  }
-
-  /// Yape y Plin se reemplazan por una sola opción "QR" con todos los QR
-  /// activos (sin repetir y sin los desactivados en ZAZU). Transferencia
-  /// suma también las cuentas bancarias de esa lista. Con [ligo], Ligo Pay
-  /// va primero: es el único cobro que se confirma solo.
+  /// Los medios activos del catalogo definen lo que puede elegir el motorizado.
+  /// Las cuentas QR se adjuntan al medio configurado por codigo, nombre o alias.
+  /// Ligo Pay se agrega solo cuando el backend lo habilita.
   static List<PaymentMethod> buildPaymentOptions(
     List<PaymentMethod> methods,
     List<PaymentAccount> qrs, {
@@ -221,32 +215,38 @@ class ApiService {
         ),
     ];
     for (final method in methods) {
-      if (_isWalletMethod(method)) continue;
+      final methodKey = _normalizePaymentLabel(method.codigo);
+      final methodNameKey = _normalizePaymentLabel(method.nombre);
       final accounts = <int, PaymentAccount>{
         for (final a in method.cuentas)
           if (a.activo) a.id: a,
+        for (final a in activeQrs)
+          if (_matchesMethod(a, methodKey, methodNameKey)) a.id: a,
         if (method.codigo.toUpperCase() == 'TRANSFERENCIA')
           for (final a in bankAccounts) a.id: a,
       };
       options.add(method.copyWith(cuentas: accounts.values.toList()));
     }
-    if (activeQrs.isNotEmpty) {
-      options.add(
-        PaymentMethod(
-          id: qrMethodId,
-          codigo: 'QR',
-          nombre: 'QR',
-          requiereReferencia: false,
-          cuentas: activeQrs,
-          requiereComprobante: true,
-        ),
-      );
-    }
     return options;
   }
 
-  /// Id local de la opción "QR" (no existe en el catálogo del backend).
-  static const qrMethodId = -1;
+  static String _normalizePaymentLabel(String value) =>
+      value.toLowerCase().replaceAll(RegExp(r'[\s_-]+'), '');
+
+  static bool _matchesMethod(
+    PaymentAccount account,
+    String methodKey,
+    String methodNameKey,
+  ) {
+    final linked = _normalizePaymentLabel(account.medioPagoCodigo ?? '');
+    if (linked.isNotEmpty && linked == methodKey) return true;
+    final name = _normalizePaymentLabel(account.nombre ?? '');
+    final alias = _normalizePaymentLabel(account.alias ?? '');
+    return (name.isNotEmpty &&
+            (name == methodKey || name == methodNameKey)) ||
+        (alias.isNotEmpty &&
+            (alias == methodKey || alias == methodNameKey));
+  }
 
   /// Id local de la opción "Ligo Pay" (tampoco existe en el catálogo).
   static const ligoMethodId = -2;
@@ -254,12 +254,14 @@ class ApiService {
   /// Medio con el que se registra la entrega cobrada con Ligo Pay. El backend
   /// solo la acepta si el webhook de Ligo ya confirmó el pago.
   static const ligoPayCode = 'LIGO PAY';
+  static const mixedPaymentCode = 'PAGO MIXTO';
 
   Future<void> confirmDelivery(
     int orderId, {
     int? operationId,
     required List<String> evidencePaths,
     String? medioPago,
+    String? medioPagoDigital,
     String? yapeAlias,
     double? montoEfectivo,
     String? nroOperacion,
@@ -301,6 +303,8 @@ class ApiService {
             if (medioPago != null && medioPago.isNotEmpty)
               'medio_pago': medioPago,
             'proveedor': proveedor,
+            if (medioPagoDigital != null && medioPagoDigital.isNotEmpty)
+              'medio_pago_digital': medioPagoDigital,
             if (yapeAlias != null && yapeAlias.isNotEmpty)
               'yape_alias': yapeAlias,
             if (montoEfectivo != null) 'monto_efectivo': montoEfectivo,

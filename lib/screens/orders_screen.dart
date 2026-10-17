@@ -560,6 +560,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
                 operationId: order.operationId,
                 evidencePaths: evidencePaths,
                 medioPago: payment.medioPago,
+                medioPagoDigital: payment.medioPagoDigital,
                 yapeAlias: payment.yapeAlias,
                 montoEfectivo: payment.montoEfectivo,
                 nroOperacion: payment.nroOperacion,
@@ -1748,6 +1749,7 @@ class _OrdersLoading extends StatelessWidget {
 class _SelectedPayment {
   const _SelectedPayment({
     this.medioPago,
+    this.medioPagoDigital,
     this.yapeAlias,
     this.montoEfectivo,
     this.nroOperacion,
@@ -1757,6 +1759,7 @@ class _SelectedPayment {
   });
 
   final String? medioPago;
+  final String? medioPagoDigital;
   final String? yapeAlias;
   final double? montoEfectivo;
   final String? nroOperacion;
@@ -2017,11 +2020,14 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
     Navigator.pop(
       context,
       _SelectedPayment(
-        // La opción "QR" se registra con el medio real del QR elegido.
         medioPago:
-            method.id == ApiService.qrMethodId
-                ? (_selectedAccount?.paymentCode ?? 'QR')
+            _isMixed
+                ? ApiService.mixedPaymentCode
                 : (method.codigo.isNotEmpty ? method.codigo : method.nombre),
+        medioPagoDigital:
+            _isMixed
+                ? (method.codigo.isNotEmpty ? method.codigo : method.nombre)
+                : null,
         yapeAlias: _selectedAccount?.alias,
         montoEfectivo: cashAmount,
         nroOperacion:
