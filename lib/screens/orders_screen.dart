@@ -1975,8 +1975,7 @@ class _PaymentMethodSheetState extends ConsumerState<_PaymentMethodSheet> {
     final digital = methods.where(_isDigitalMethod).toList();
     if (digital.isEmpty) return null;
     for (final method in digital) {
-      if (method.id == ApiService.qrMethodId ||
-          '${method.codigo} ${method.nombre}'.toLowerCase().contains('qr')) {
+      if ('${method.codigo} ${method.nombre}'.toLowerCase().contains('qr')) {
         return method;
       }
     }
