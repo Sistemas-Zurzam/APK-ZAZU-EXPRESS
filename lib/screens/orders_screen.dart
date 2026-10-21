@@ -334,12 +334,11 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen> {
                       label: 'Dirección',
                       value: order.address,
                     ),
-                    if (order.observations != null)
-                      _DetailTile(
-                        icon: Icons.notes_outlined,
-                        label: 'Observaciones',
-                        value: order.observations!,
-                      ),
+                    _DetailTile(
+                      icon: Icons.notes_outlined,
+                      label: 'Observaciones',
+                      value: order.observations ?? 'Sin observaciones',
+                    ),
                     _DetailTile(
                       icon: Icons.payments_outlined,
                       label: 'Monto a cobrar',

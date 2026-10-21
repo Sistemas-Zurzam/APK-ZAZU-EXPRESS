@@ -181,12 +181,11 @@ Future<void> showOrderContactSheet(
                         label: 'Dirección',
                         value: order.address,
                       ),
-                      if (order.observations != null)
-                        _InfoRow(
-                          icon: Icons.notes_outlined,
-                          label: 'Observaciones',
-                          value: order.observations!,
-                        ),
+                      _InfoRow(
+                        icon: Icons.notes_outlined,
+                        label: 'Observaciones',
+                        value: order.observations ?? 'Sin observaciones',
+                      ),
                       const SizedBox(height: 14),
                       Row(
                         children: [
