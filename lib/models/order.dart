@@ -225,9 +225,7 @@ class DeliveryOrder {
       backpackSequence: _parseInt(
         _findValue(json, ['orden_mochila', 'orden_carga', 'posicion_mochila']),
       ),
-      observations: _stringOrNull(
-        _findValue(json, ['observaciones', 'observacion', 'nota']),
-      ),
+      observations: _observations(json),
       brand: _stringOrNull(json['marca']),
       paymentMethod: _stringOrNull(json['medio_pago']),
       cashAmount:
@@ -410,6 +408,25 @@ class DeliveryOrder {
   static String _stringOrDefault(dynamic value, String fallback) {
     final text = _stringOrNull(value);
     return text ?? fallback;
+  }
+
+  /// Especificaciones del pedido y luego sus observaciones, una por línea y
+  /// sin repetir líneas: el servidor ya puede mandarlas juntas en
+  /// `observaciones`.
+  static String? _observations(Map<String, dynamic> json) {
+    final lines = <String>[];
+    for (final value in [
+      _findValue(json, ['especificaciones', 'especificacion']),
+      _findValue(json, ['observaciones', 'observacion', 'nota']),
+    ]) {
+      final text = _stringOrNull(value);
+      if (text == null) continue;
+      for (final line in text.split('\n')) {
+        final clean = line.trim();
+        if (clean.isNotEmpty && !lines.contains(clean)) lines.add(clean);
+      }
+    }
+    return lines.isEmpty ? null : lines.join('\n');
   }
 
   static String? _stringOrNull(dynamic value) {
