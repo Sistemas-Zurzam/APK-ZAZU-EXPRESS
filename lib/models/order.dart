@@ -16,6 +16,7 @@ class DeliveryOrder {
     this.backpackSequence,
     this.observations,
     this.brand,
+    this.shippingLevel,
     this.paymentMethod,
     this.cashAmount,
     this.ligoPaidAmount = 0,
@@ -41,6 +42,9 @@ class DeliveryOrder {
   /// Marca del pedido (Overshark, Bravos, Box Prime). Los pedidos de posventa
   /// ("ATC/000018") no la llevan en [externalRef].
   final String? brand;
+
+  /// Nivel de envío del pedido, por ejemplo Regular, Express, Aéreo o Terrestre.
+  final String? shippingLevel;
 
   /// Cómo se cobró al entregar (EFECTIVO, YAPE, Cambio...) y la parte en
   /// efectivo; con esto se calcula lo que el motorizado rinde en caja.
@@ -105,6 +109,7 @@ class DeliveryOrder {
     backpackSequence: backpackSequence,
     observations: observations,
     brand: brand,
+    shippingLevel: shippingLevel,
     paymentMethod: paymentMethod,
     cashAmount: cashAmount,
     ligoPaidAmount: ligoPaidAmount,
@@ -227,6 +232,9 @@ class DeliveryOrder {
       ),
       observations: _observations(json),
       brand: _stringOrNull(json['marca']),
+      shippingLevel: _stringOrNull(
+        _findValue(json, ['nivel_envio', 'shipping_level', 'shippingLevel']),
+      ),
       paymentMethod: _stringOrNull(json['medio_pago']),
       cashAmount:
           json['monto_efectivo'] == null
