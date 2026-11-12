@@ -22,11 +22,16 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          # El lint de AGP 9 (Flutter 3.50) necesita JDK 21: con 17 revienta
+          # en lintVitalAnalyzeRelease (NoSuchMethodError List.removeLast).
+          java-version: '21'
 
+      # Versión fija: con "stable" suelto, cada Flutter nuevo puede exigir otro
+      # Gradle/AGP y romper el build sin que nadie toque el proyecto.
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+          flutter-version: 3.50.0
           cache: true
 
       # El release se firma con la clave de depuración (ver android/app/build.gradle).
